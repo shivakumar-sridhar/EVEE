@@ -1,0 +1,218 @@
+"""Template dispatch: validated params in, STL files and preview PNGs out.
+
+This module is the boundary Gate 1 sits on. :func:`design` returns everything a
+human needs to decide "is this the right shape" — the read-back sentence, the
+bounding boxes, and two rendered views per part — and nothing that starts a print.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import trimesh
+from build123d import Part, export_stl
+
+from vtp.config import OUTPUT_DIR, export_tolerances
+from vtp.templates import TEMPLATE_REGISTRY, get_template
+
+__all__ = ["DesignResult", "design", "render_preview"]
+
+#: (elevation, azimuth) for the two preview views.
+_VIEWS: dict[str, tuple[float, float]] = {
+    "iso": (25.0, -45.0),
+    "top": (90.0, -90.0),
+}
+
+
+@dataclass(frozen=True)
+class DesignResult:
+    """What Gate 1 shows the human."""
+
+    template: str
+    params: dict
+    spec_sentence: str
+    stl_paths: dict[str, Path]
+    bounding_boxes: dict[str, tuple[float, float, float]]
+    preview_paths: dict[str, list[Path]] = field(default_factory=dict)
+    inner_dims: tuple[float, float, float] | None = None
+
+    def summary(self) -> str:
+        """Human-readable block for the approval gate."""
+        lines = [self.spec_sentence, ""]
+        for part, (x, y, z) in self.bounding_boxes.items():
+            lines.append(f"  {part:<6} {x:g} x {y:g} x {z:g} mm  ->  {self.stl_paths[part].name}")
+        return "\n".join(lines)
+
+
+def design(
+    template: str,
+    params: dict,
+    output_dir: Path | None = None,
+    slug: str | None = None,
+    render: bool = True,
+) -> DesignResult:
+    """Build a template's parts, export STLs, and render previews.
+
+    Args:
+        template: A key of :data:`vtp.templates.TEMPLATE_REGISTRY`.
+        params: Raw parameters; validated against the template's Pydantic model.
+        output_dir: Where to write. Defaults to the repo's ``output/``.
+        slug: Filename stem. Defaults to the template name.
+        render: Set False to skip preview PNGs (they dominate the runtime).
+
+    Raises:
+        UnknownTemplateError: no such template.
+        pydantic.ValidationError: params are invalid for this template.
+    """
+    spec = get_template(template)
+    validated = spec.validate_params(params)
+
+    target = Path(output_dir) if output_dir else OUTPUT_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    stem = slug or spec.name
+
+    parts = spec.build(validated)
+    if len(parts) != len(spec.part_names):
+        raise RuntimeError(
+            f"template {spec.name!r} returned {len(parts)} solids but declares "
+            f"part_names={spec.part_names}"
+        )
+
+    stl_paths: dict[str, Path] = {}
+    bounding_boxes: dict[str, tuple[float, float, float]] = {}
+    preview_paths: dict[str, list[Path]] = {}
+
+    for name, part in zip(spec.part_names, parts):
+        stl_path = target / f"{stem}_{name}.stl"
+        _export(part, stl_path)
+        stl_paths[name] = stl_path
+        size = part.bounding_box().size
+        bounding_boxes[name] = (size.X, size.Y, size.Z)
+        if render:
+            preview_paths[name] = render_preview(stl_path)
+
+    return DesignResult(
+        template=spec.name,
+        params=validated.model_dump(),
+        spec_sentence=spec.spec_sentence(validated),
+        stl_paths=stl_paths,
+        bounding_boxes=bounding_boxes,
+        preview_paths=preview_paths,
+        inner_dims=spec.inner_dims(validated),
+    )
+
+
+def _export(part: Part, path: Path) -> None:
+    """Tessellate to STL at the tolerances from defaults.toml."""
+    linear, angular = export_tolerances()
+    if not export_stl(part, path, tolerance=linear, angular_tolerance=angular):
+        raise RuntimeError(f"export_stl reported failure writing {path}")
+    if not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"export_stl wrote nothing to {path}")
+
+
+def _camera_direction(elev_deg: float, azim_deg: float) -> np.ndarray:
+    """Unit vector from the part toward the camera, in mplot3d's convention."""
+    elev, azim = np.radians(elev_deg), np.radians(azim_deg)
+    return np.array(
+        [np.cos(elev) * np.cos(azim), np.cos(elev) * np.sin(azim), np.sin(elev)]
+    )
+
+
+def render_preview(stl_path: Path, output_dir: Path | None = None) -> list[Path]:
+    """Render an STL to two PNGs: isometric and top-down.
+
+    matplotlib's ``mplot3d`` only, deliberately. Offscreen GL (pyrender/pyglet) on
+    headless Linux is not worth the debugging time, and these images exist to
+    answer "is the shape right", not to be pretty.
+
+    ``Poly3DCollection`` has no z-buffer, so a hollow part drawn naively renders
+    its own back faces over the front and reads as a solid block — which would
+    hide exactly the feature Gate 1 exists to check. So we cull back faces
+    ourselves and shade the rest by normal.
+
+    Returns the written paths, ``[<stem>_iso.png, <stem>_top.png]``.
+    """
+    # Imported lazily: matplotlib is a heavy import and design(render=False) skips it.
+    import matplotlib
+
+    matplotlib.use("Agg")  # no display on this box, and none wanted
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    stl_path = Path(stl_path)
+    target = Path(output_dir) if output_dir else stl_path.parent
+    target.mkdir(parents=True, exist_ok=True)
+
+    mesh = trimesh.load_mesh(stl_path)
+    lo, hi = mesh.bounds
+    size = hi - lo
+    margin = float(size.max()) * 0.04
+
+    written: list[Path] = []
+    for view, (elev, azim) in _VIEWS.items():
+        camera = _camera_direction(elev, azim)
+
+        facing = mesh.face_normals @ camera
+        visible = facing > 1e-9
+        triangles = mesh.triangles[visible]
+        # Painter's algorithm over the survivors: farthest first.
+        order = np.argsort(mesh.triangles_center[visible] @ camera)
+        triangles = triangles[order]
+        # Lambert term against a light just off the camera axis, so coplanar
+        # faces at different depths still separate visually.
+        light = camera + np.array([0.25, 0.15, 0.35])
+        light /= np.linalg.norm(light)
+        shade = np.clip(mesh.face_normals[visible][order] @ light, 0.0, 1.0)
+        intensity = 0.45 + 0.55 * shade
+        colors = np.column_stack(
+            [0.42 * intensity, 0.60 * intensity, 0.78 * intensity, np.ones_like(intensity)]
+        )
+
+        fig = plt.figure(figsize=(6, 6), dpi=110)
+        ax = fig.add_subplot(projection="3d")
+        # matplotlib re-sorts by projected depth and carries facecolors along,
+        # so our ordering is belt-and-braces; the culling above is what matters.
+        ax.add_collection3d(
+            Poly3DCollection(
+                triangles, facecolors=colors, edgecolors="#1d3348", linewidths=0.12
+            )
+        )
+
+        ax.set_xlim(lo[0] - margin, hi[0] + margin)
+        ax.set_ylim(lo[1] - margin, hi[1] + margin)
+        ax.set_zlim(lo[2] - margin, hi[2] + margin)
+        # True proportions without wasting frame on a bounding cube.
+        ax.set_box_aspect(tuple(np.maximum(size, size.max() * 0.02)))
+        ax.view_init(elev=elev, azim=azim)
+
+        # A flat part (a lid is 10x wider than tall) gets a short axis; the
+        # default six ticks then collapse into an unreadable smear. Thin them in
+        # proportion rather than distorting the aspect to make room.
+        for axis, extent in zip((ax.xaxis, ax.yaxis, ax.zaxis), size):
+            bins = int(np.clip(round(6 * extent / size.max()), 2, 6))
+            axis.set_major_locator(MaxNLocator(nbins=bins))
+
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.set_zlabel("Z (mm)")
+        ax.set_title(
+            f"{stl_path.stem} — {view}\n"
+            f"{size[0]:g} x {size[1]:g} x {size[2]:g} mm",
+            fontsize=10,
+        )
+
+        png = target / f"{stl_path.stem}_{view}.png"
+        fig.savefig(png, bbox_inches="tight")
+        plt.close(fig)
+        written.append(png)
+
+    return written
+
+
+def list_templates() -> dict[str, str]:
+    """Template name -> description. Phase 4 renders this into the prompt."""
+    return {name: spec.description for name, spec in TEMPLATE_REGISTRY.items()}

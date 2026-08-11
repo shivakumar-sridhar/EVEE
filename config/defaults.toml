@@ -1,0 +1,19 @@
+# House defaults. This file is the source of truth for anything a template
+# leaves unspecified. Tuning the physical fit of a printed part happens HERE,
+# not in the geometry code.
+
+[geometry]
+wall = 2.0        # mm
+fillet = 1.0      # mm, vertical edges
+lip_height = 3.0  # mm, how deep a press-fit lid lip engages the cavity
+
+[clearance]
+# Gap per side between lid lip and cavity wall. If a printed lid is too tight,
+# raise press_fit and reprint; too loose, lower it. No code change needed.
+press_fit = 0.25  # snug — the default
+snug = 0.2
+easy = 0.3
+
+[export]
+stl_linear_tolerance = 0.05   # mm
+stl_angular_tolerance = 0.1   # radians
