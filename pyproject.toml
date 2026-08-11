@@ -2,6 +2,9 @@
 name = "vtp"
 version = "0.1.0"
 description = "Natural language -> parametric CAD -> sliced G-code -> Ender 3 print, via MCP tools"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "build123d>=0.9",
