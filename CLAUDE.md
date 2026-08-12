@@ -47,9 +47,8 @@ descriptions. If you ever find one holding only because of this file, that is th
 - Always report resolved inner dimensions alongside outer
 
 ## Slicing
-- Only use `config/ender3_v3se.ini`. It is hand-tuned. Do not generate slicer configs.
-  Its `start_gcode` was edited 2026-08-12 to fix the first-layer ooze, so it is not
-  currently *physically* verified — see § The machine.
+- Only use `config/ender3_v3se.ini`. It is hand-tuned and physically verified, including
+  the 2026-08-12 ooze fix — see § The machine. Do not generate slicer configs.
 - `slice_part` exposes **no profile parameter** — that is the enforcement, not this bullet.
   It exposes no levelling parameter either: whether the stored mesh is used is *state*,
   decided by `calibration.mesh_state()`, never a knob a client can turn.
@@ -135,8 +134,8 @@ Done:
 - **Phase 0 — complete.** OctoPrint 1.11.8 verified at the URL in `.env`, Ender on
   `/dev/ttyUSB0` @ 115200. PrusaSlicer 2.9.4 installed; `config/ender3_v3se.ini` is
   hand-tuned, exported, and **physically verified** — it sliced the case body (55 layers,
-  4.25 g, 30m44s) and the print completed. That verification covered the profile *as it
-  stood then*; the 2026-08-12 `start_gcode` ooze fix has not been through a print yet.
+  4.25 g, 30m44s) and the print completed. Re-verified 2026-08-12 after the ooze fix,
+  with the two-part plate: 56m 56s against a 53m 49s estimate.
 - **Phase 5, design half — `src/vtp/server.py`.** MCP stdio server exposing
   `list_templates` and `design_part`. Registered in `.mcp.json`. Verified end to end
   against a real MCP client over a subprocess.
@@ -166,8 +165,11 @@ Done:
   request); the four fixes above all came out of it. The testing rule below still holds:
   a print is started when the human says so, never to check something.
 
+In progress:
+- **Phase 7 voice — the safety half is done** (`src/vtp/voice/`). See below.
+
 Not started:
-- Phase 7 voice.
+- Phase 7's audio half: STT (faster-whisper), TTS, push-to-talk, the loop itself.
 - Phase 4 is superseded — see below.
 
 ### Slicing and the viewer (`slicer.py`, `viewer.py`)
@@ -368,10 +370,54 @@ identical, time 38m10s → 37m46s. The 24s is the `Z50` round-trip at F240 that 
 happens; no extrusion changed. **`tests/test_profile.py` guards all of it**, including
 that `Z50` never comes back.
 
-**The profile's "physically verified" status has lapsed** as of this edit and stays
-lapsed until a real print runs with it and is watched through the first layer. The
-geometry, the bed size and every extrusion setting are untouched, so the risk is narrow
-— but "verified" means a human watched it, and nobody has watched this one yet.
+**Re-verified 2026-08-12.** `bno085_case_v2_plate.gcode` ran to 100% on the fixed
+profile — body and lid together, 56m 56s — and the owner confirmed the first layer
+looked good while it printed. That is the watch the lapse was waiting for, so the
+profile is physically verified again, now including the ooze fix and the plate.
+
+**PrusaSlicer's time estimate is accurate; OctoPrint's mid-print estimate is not.**
+Worth writing down because it caused a false alarm. At 15% the web UI claimed 1h 41m
+remaining against a 53m 49s estimate, and at 29% the elapsed-vs-percent ratio still
+extrapolated to ~90 minutes — which looked like the profile being systematically
+optimistic. The finished job came in at **3416s against an estimated 3229s: 5.8% over.**
+OctoPrint's `printTimeLeft` is byte-position based and useless before roughly a third of
+the way in; the several minutes of `G28`/`G29`/heating count as elapsed while producing
+no progress, which skews any early extrapolation. Do not re-tune the profile off a
+mid-print reading — wait for `print_time_seconds` on a completed job.
+
+### Voice (`voice/`) — Phase 7, safety half complete
+
+- **The Agent SDK surface was verified, not recalled.** `BUILD_PLAN.md` says to check it
+  when the phase starts, and it was: `claude-agent-sdk` 0.2.95, `ClaudeSDKClient` for the
+  persistent session, `ClaudeAgentOptions(system_prompt, mcp_servers, allowed_tools,
+  can_use_tool, permission_mode)`. All five fields confirmed against the installed
+  package, and `PermissionResultAllow(updated_input=)` / `PermissionResultDeny(message=,
+  interrupt=)` against their real signatures.
+- **`can_use_tool` is what makes "Gate 3 is not reachable from a transcript" a
+  mechanism.** The SDK invokes it before any tool runs, so the rule is a Python refusal
+  in `voice/gate.py` rather than a sentence in a prompt — which is this repo's whole
+  position on where safety lives. `start_print`, `cancel_print` and `calibrate_bed` are
+  denied from a voice session no matter what was said or how the prompt was worded.
+- **An allowlist, not a blocklist**, and the distinction is load-bearing: a blocklist
+  would silently admit the next machine-moving tool somebody adds to the server. Adding
+  a tool must not quietly widen what a microphone can do.
+- **Two layers, because an allowlist alone fails open.** `allowed_tools` omits the
+  machine-moving tools so they are never auto-approved; a name merely *absent* from that
+  list falls through to a permission prompt, and a headless voice loop has nobody to
+  prompt. `can_use_tool` fails *closed*. Layer 2 is the one that holds.
+- **`permission_mode` stays `"default"`.** `bypassPermissions` auto-approves MCP tools
+  and skips the callback this module exists for.
+- **`decide()` is a pure function of the tool name**, with no SDK types in its signature,
+  so the rule is testable without the SDK, a microphone or a printer. The adapter to the
+  SDK's protocol is tested separately behind an `importorskip`.
+- **`test_every_server_tool_is_classified` fails when the server grows a tool.** An
+  unclassified tool is still denied by the allowlist, but with the generic message rather
+  than one saying *why* — and an unexplained refusal is one a person argues with.
+- **The launch command is read from `.mcp.json`**, not restated in Python — same reason
+  `bed_extents()` reads the profile instead of hard-coding 220.
+- **The voice extra is optional** (`pip install -e .[voice]`). The MCP server is the
+  product and must install and run without a microphone, a GPU, or an agent SDK; nothing
+  outside `src/vtp/voice/` imports any of it.
 
 ### The architecture change (supersedes BUILD_PLAN Phase 4)
 

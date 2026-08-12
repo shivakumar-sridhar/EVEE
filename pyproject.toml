@@ -18,6 +18,18 @@ dependencies = [
     "httpx2>=2.0",
 ]
 
+[project.optional-dependencies]
+# Phase 7. Optional on purpose: the MCP server is the product, and it must install and
+# run without a microphone, a GPU, or an agent SDK. `pip install -e .[voice]` adds the
+# voice frontend; nothing in src/vtp outside src/vtp/voice/ imports any of it.
+#
+# claude-agent-sdk drives a persistent multi-turn session so that "make it 5mm taller"
+# resolves against the previous part. It shells out to the `claude` CLI, which must be
+# on PATH separately.
+voice = [
+    "claude-agent-sdk>=0.1",
+]
+
 # Later phases (do not add until that phase starts):
 #   Phase 4 extract.py -> ollama (superseded; see BUILD_PLAN.md)
 
