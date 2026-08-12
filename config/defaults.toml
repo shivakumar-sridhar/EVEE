@@ -7,6 +7,19 @@ wall = 2.0        # mm
 fillet = 1.0      # mm, vertical edges
 lip_height = 3.0  # mm, how deep a press-fit lid lip engages the cavity
 
+[standoff]
+# Posts rising from the cavity floor that a PCB rests on, screws into, or both.
+# hole_diameter is a PILOT for a self-tapping screw cutting its own thread in
+# plastic — not a clearance hole. 2.1mm suits an M2.5 self-tapper, which is what
+# Adafruit-sized breakouts take; 1.7mm suits M2. Set hole_diameter = 0 for a
+# plain spacer that only lifts and locates the board.
+#
+# If a printed boss splits when the screw goes in, raise diameter. If the screw
+# spins without biting, lower hole_diameter. Both are tuned HERE.
+diameter = 4.0
+height = 3.0
+hole_diameter = 2.1
+
 [clearance]
 # Gap per side between lid lip and cavity wall. If a printed lid is too tight,
 # raise press_fit and reprint; too loose, lower it. No code change needed.
@@ -17,3 +30,124 @@ easy = 0.3
 [export]
 stl_linear_tolerance = 0.05   # mm
 stl_angular_tolerance = 0.1   # radians
+
+[viewer]
+# Gate 1 is a shape check, and a still image is a poor way to make it — you cannot
+# see a port on the far wall. design_part opens the exported STLs here instead.
+# Exported paths are appended to `command` as trailing arguments.
+#
+# Set auto_open = false for a headless box or a remote MCP client; the design still
+# succeeds and still writes preview PNGs, it just does not pop a window.
+#
+# PrusaSlicer is the review app for both gates. It shows the part on the real
+# 220x220 bed at true scale, which is the thing a generic mesh viewer cannot do:
+# "does this fit, and which way up does it print" is answered at a glance.
+#
+#   --load {profile}   apply the verified profile to the GUI session, so the
+#                      export button in the UI cannot reach for a stock profile
+#                      that lacks this machine's start sequence.
+#
+# --single-instance was here and has been REMOVED. It forwarded each new design
+# into the existing window's scene and never cleared it, so four objects from two
+# designs ended up stacked on the origin. It also made the launched process hand
+# over its arguments and exit immediately, which left no pid to close later.
+# viewer.py now closes the window it opened last and starts a fresh one, which
+# needs our own pid to be the window's pid. Do not add the flag back.
+#
+# {profile} expands to the absolute path of [slicing].profile. Use the token
+# rather than a literal path: an MCP client launches the server from any working
+# directory, so a relative path here would resolve somewhere unexpected.
+#
+# On a machine with no PrusaSlicer datadir the first launch shows the config
+# wizard, which blocks the window; add --datadir <dir> to point at a prepared one.
+#
+# Lightweight alternative, if you want a plain mesh viewer with no bed and no
+# slicer attached (apt install f3d):
+#   command = ["f3d", "--up=+Z", "--axis", "--grid"]
+command = ["prusa-slicer", "--load", "{profile}"]
+auto_open = true
+
+# Gate 2. Slicing itself is headless and always has been — `--export-gcode` runs
+# captured, because under stdio transport its progress output would land on the
+# JSON-RPC stream. This is only about the separate toolpath *window* afterwards.
+#
+# Off by default: once the shape is approved at Gate 1, the layer count, gram
+# weight and time estimate that slice_part returns are what tell you the slice is
+# sane. That is how the Phase 2 acceptance was verified (55 layers, 4.25 g,
+# 30m44s) without anyone opening this.
+#
+# Set true to eyeball toolpaths before each print. It is tracked like the model
+# viewer, so it replaces its own window rather than stacking them.
+gcode_command = ["prusa-gcodeviewer"]
+gcode_auto_open = false
+
+[slicing]
+# The one hand-tuned, physically verified profile. Slicing never generates a config
+# and the MCP tool exposes no way to choose a different one — see slicer.py.
+profile = "config/ender3_v3se.ini"
+timeout_seconds = 600
+
+# Bed to keep free around a multi-part plate, in mm. The bounding box of the parts is
+# not the whole footprint: the profile draws one skirt loop at skirt_distance = 3, and
+# start_gcode primes the nozzle down the left edge at X2.0-2.3. A plate sized to the
+# exact 220mm limit passes a bounding-box check and then hits one of those.
+#
+# Only applied to the plate and only on X and Y. A single part is checked against the
+# raw limit, as it always was.
+plate_margin_mm = 6.0
+
+[printer]
+# OctoPrint on the Pi. The URL and the API key are NOT here: this file is committed
+# and the key is a secret. Both live in .env at the repo root — see .env.example.
+#
+# printer.py reads that file itself rather than trusting os.environ, for the same
+# reason viewer.py discovers DISPLAY from disk: an MCP client spawns this server
+# with a scrubbed environment (HOME, LOGNAME, PATH, SHELL, TERM, USER and nothing
+# else), so a key exported in your shell does not reach the server.
+#
+# A status GET is a couple of hundred bytes and should answer immediately; a slow
+# reply means the Pi is busy driving serial, so keep this short and let it fail.
+timeout_seconds = 10
+
+# Uploads are a different shape of request: the Phase 2 G-code is ~320 KB going to
+# a Pi over wifi, and the Pi writes it to an SD card before replying.
+upload_timeout_seconds = 120
+
+# After a cancel, the head is parked so the plate can be reached and cleaned. That
+# cannot happen while the job is still winding down: OctoPrint reports "Cancelling"
+# for a while and rejects commands until it is done. So we poll until the machine is
+# genuinely idle, then send the park.
+#
+# The timeout is generous because the alternative to waiting is a nozzle left sitting
+# on the part. If it expires the cancel still stood — the park is reported as skipped,
+# never raised, because the cancel is the thing the human asked for.
+park_timeout_seconds = 90
+park_poll_seconds = 2
+
+[bed_mesh]
+# The printer probes the whole bed at the start of every print (G29 in the profile's
+# start_gcode), which costs minutes. calibrate_bed runs that probe once and stores the
+# mesh with M500; slicer.py then swaps G29 for M420 S1 on later slices.
+#
+# The profile is NOT edited to do this — G29 stays in it, and stays correct. The swap
+# happens after the export and only when a mesh has demonstrably been stored, because
+# M420 S1 against a mesh Marlin does not have prints on a flat plane and says so only
+# on the serial console.
+#
+# How old a stored mesh may be before prints go back to probing. Nothing here can read
+# the mesh back out of the printer, so age is the only staleness signal there is. Lower
+# it if the machine gets moved around.
+max_age_days = 30
+
+# Confirming the probe finished. OctoPrint answers 204 the moment it queues G28/G29/M500
+# and exposes no "the probe is done" flag, so calibrate_bed appends M104 S{probe_ack_temp}
+# and waits for the nozzle TARGET to read back that value. OctoPrint learns the target
+# from the printer's own temperature report, so it cannot appear until Marlin has
+# executed that line — which means G29 finished. A failed probe never reaches it, the
+# wait times out, and no mesh is recorded.
+#
+# Keep the ack temperature below any extrusion temperature: it exists to be observed,
+# not to melt anything. It is set back to 0 as soon as it is seen.
+probe_ack_temp = 42
+probe_timeout_seconds = 300
+probe_poll_seconds = 3

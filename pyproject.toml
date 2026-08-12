@@ -1,7 +1,7 @@
 [project]
 name = "vtp"
 version = "0.1.0"
-description = "Natural language -> parametric CAD -> sliced G-code -> Ender 3 print, via MCP tools"
+description = "Natural language -> parametric CAD -> sliced G-code -> Ender-3 V3 SE print, via MCP tools"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -12,12 +12,14 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "pydantic>=2.7",
+    "mcp>=2.0",
+    # printer.py. `mcp` already pulls httpx2 in, but depending on a transitive dep
+    # is depending on someone else's requirements file — name it here as well.
+    "httpx2>=2.0",
 ]
 
 # Later phases (do not add until that phase starts):
-#   Phase 3 printer.py -> httpx
-#   Phase 4 extract.py -> ollama
-#   Phase 5 server.py  -> mcp
+#   Phase 4 extract.py -> ollama (superseded; see BUILD_PLAN.md)
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
