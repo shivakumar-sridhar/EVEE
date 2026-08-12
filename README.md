@@ -1,6 +1,6 @@
 # EVI — voice-to-print
 
-Natural language → parametric CAD → sliced G-code → a physical print on an Ender 3.
+Natural language → parametric CAD → sliced G-code → a physical print on an Ender-3 V3 SE.
 
 Describe a part in a sentence, approve the geometry, approve the slice, and it prints.
 The pipeline is exposed as MCP tools, so the same interface works from a voice loop or
@@ -112,21 +112,49 @@ headless Linux is not worth the debugging time.
 **If no template fits, the pipeline stops** and says so, rather than improvising
 geometry. Freeform CAD codegen is an explicit non-goal.
 
+## Connecting a client
+
+The MCP server is the product. It speaks stdio, so **any MCP client can drive it** —
+bring your own model.
+
+```bash
+uv sync
+```
+
+**Claude Code** — the repo ships a project-scoped `.mcp.json`; a session started in this
+directory picks it up. Verify with `/mcp`.
+
+**Any other client** (OpenCode, Cline, Zed, …) — register the equivalent:
+
+| | |
+|---|---|
+| command | `.venv/bin/python` |
+| args | `["-m", "vtp.server"]` |
+| cwd | the repo root |
+| transport | stdio |
+
+Nothing Claude-specific is required. `python -m vtp.server` speaks MCP on its own.
+
+Two tools today: `list_templates()` returns each template's JSON Schema, and
+`design_part(template, params)` builds it. Call the first to learn the parameter
+contract, then the second. There is no free-text `description` parameter — your client's
+model picks the template and fills the schema, and the server validates it.
+
 ## Roadmap
 
 | Phase | | |
 |---|---|---|
-| 0 | Hardware prep — human checklist, blocking | ☐ |
+| 0 | Hardware prep — human checklist, blocking | ☑ |
 | 1 | Parametric template + CAD dispatch | ☑ |
 | 2 | PrusaSlicer CLI wrapper, G-code metadata | ☐ |
 | 3 | OctoPrint REST client | ☐ |
-| 4 | LLM parameter extraction (local, constrained) | ☐ |
-| 5 | MCP server + the two approval gates | ☐ |
+| 4 | ~~LLM parameter extraction~~ — superseded, the client's model does this | — |
+| 5 | MCP server + the two approval gates | ◧ design tools done |
 | 6 | Async completion notification | ☐ |
 | 7 | Voice, push-to-talk | ☐ |
 
-Phase 1 is code-complete but its acceptance criterion is physical: print the body and
-lid and confirm the lid fits — snug, not loose, not forced.
+Phases 0 and 1 are verified physically, not just in tests: a BNO085 sensor case was
+designed here, sliced with `config/ender3_v3se.ini`, and printed successfully.
 
 Templates grow by use. Anything you design twice becomes one; after ~10 parts you have
 covered most of what you actually print. Honest expectation: for a simple box this is
@@ -137,4 +165,4 @@ tenth part, when "a wrist camera mount at 15 degrees" resolves in one sentence.
 
 [build123d](https://build123d.readthedocs.io) · PrusaSlicer CLI ·
 [OctoPrint](https://octoprint.org) REST · [MCP](https://modelcontextprotocol.io) stdio server ·
-Qwen3 8B via [Ollama](https://ollama.com) for extraction
+your own model, through your own client

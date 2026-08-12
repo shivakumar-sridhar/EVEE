@@ -1,7 +1,7 @@
 [project]
 name = "vtp"
 version = "0.1.0"
-description = "Natural language -> parametric CAD -> sliced G-code -> Ender 3 print, via MCP tools"
+description = "Natural language -> parametric CAD -> sliced G-code -> Ender-3 V3 SE print, via MCP tools"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -12,6 +12,7 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "pydantic>=2.7",
+    "mcp>=2.0",
 ]
 
 # Later phases (do not add until that phase starts):

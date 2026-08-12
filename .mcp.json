@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vtp": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "vtp.server"]
+    }
+  }
+}

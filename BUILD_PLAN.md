@@ -1,6 +1,10 @@
 # Voice-to-Print Pipeline — Build Plan
 
-Agentic workflow: natural language part description → parametric CAD → approval → slice → approval → print on an Ender 3 via a Raspberry Pi.
+Agentic workflow: natural language part description → parametric CAD → approval → slice → approval → print on an Ender-3 V3 SE via a Raspberry Pi.
+
+**The MCP server is the product. The model is bring-your-own.** Everything above the
+server — voice, agent CLI, model provider — is swappable by the user. See
+[System design](#system-design).
 
 This document is the spec. Work through phases in order. **Do not skip ahead** — each phase produces a verified artifact the next phase depends on.
 
@@ -15,12 +19,122 @@ Do not re-litigate these during implementation.
 | CAD | `build123d` | Python-native B-rep, clean API, headless-friendly |
 | Slicer | PrusaSlicer CLI (or OrcaSlicer CLI) | Scriptable, stable config `.ini` format |
 | Printer host | OctoPrint on the Pi | No firmware flashing needed, clean REST API over USB serial |
-| Interface | MCP server (`stdio`) | Same tools work from a voice loop and from Claude Code |
+| Interface | MCP server (`stdio`) | **This is the product.** Any MCP client drives it — Claude Code, OpenCode, Cline, Zed |
 | Language | Python 3.11+ | build123d and the MCP SDK both target it |
 | Param extraction | LLM → JSON → **vetted template** | Not freeform geometry codegen |
-| Extraction model | Qwen3 8B via Ollama, local | Task is small; constrained decoding matters more than size |
+| Extraction model | **whatever the user's CLI runs** | BYO. The server validates rather than trusting anyone's decoder |
 
 **Where code runs:** CAD + slicing on the laptop (PrusaSlicer on ARM is a pain). The Pi only runs OctoPrint. Laptop talks to the Pi over HTTP on the LAN.
+
+---
+
+## System design
+
+### Layers
+
+```
+                          HUMAN
+          speaks ──── sees preview ──── confirms print
+             │             ▲                  ▲
+             ▼             │                  │
+   ┌─────────────────────────────────────────────────────┐
+   │ VOICE FRONTEND                   (Phase 7, optional) │
+   │   faster-whisper STT  ──►  text                      │
+   │   Piper / Kokoro TTS  ◄──  text                      │
+   └─────────────────────────────────────────────────────┘
+             │ text
+             ▼
+   ┌─────────────────────────────────────────────────────┐
+   │ AGENT CLI — bring your own model                     │
+   │   Claude Code │ OpenCode │ Cline │ Zed │ …           │
+   │   reads tool schemas ─► picks a template             │
+   │                      ─► fills params with numbers    │
+   │   never writes geometry, never decides to print      │
+   └─────────────────────────────────────────────────────┘
+             │ MCP over stdio — JSON params only
+             ▼
+   ╔═════════════════════════════════════════════════════╗
+   ║ vtp MCP SERVER                    src/vtp/server.py  ║
+   ║   list_templates()                        Phase 5    ║
+   ║   design_part(template, params)           Phase 5    ║
+   ║   slice_part(stl_path)                    Phase 5    ║
+   ║   get_printer_status()                    Phase 5    ║
+   ║   start_print(gcode, bed_confirmed_clear) Phase 5    ║
+   ╚═════════════════════════════════════════════════════╝
+        │                  │                   │
+        ▼                  ▼                   ▼
+     cad.py             slicer.py           printer.py
+     Phase 1            Phase 2             Phase 3
+        │                  │                   │
+     build123d          PrusaSlicer         OctoPrint REST
+     templates/         ender3_v3se.ini     (Pi, over LAN)
+        │                  │                   │
+     STL + PNG          G-code              Ender-3 V3 SE
+```
+
+### Request lifecycle
+
+```
+ 1  human: "case for my BNO085, ports on both ends"
+ 2  STT → text                                        [voice only]
+ 3  agent → list_templates()          → box_with_lid + description
+ 4  agent reads box_with_lid JSON schema
+ 5  agent computes numbers, calls design_part(template, params)
+    ────────────────────────────────────────────────── server side
+ 6  Pydantic validate  (extra="forbid")   ─┐ bad input → error naming
+ 7  _validate() cross-field checks         │ the value → agent fixes
+ 8  build123d → body + lid solids          │ and retries
+ 9  export STL + render preview PNGs      ─┘
+10  return spec sentence, bboxes, paths
+    ──────────────────────────────────────────────────
+11  ▶ GATE 1  human sees preview PNG + spec sentence.  SCREEN REQUIRED.
+12  agent → slice_part(stl)  → PrusaSlicer + hand-tuned profile
+13  ▶ GATE 2  human sees time / grams / layers
+14  agent → get_printer_status()  → must be Operational
+15  agent → upload_gcode()        → separate call, print=false
+16  ▶ GATE 3  human supplies bed_confirmed_clear=True   NON-VOICE ONLY
+17  agent → start_print()  → OctoPrint → Ender-3 V3 SE
+18  background poller → ntfy push on done/fail          [Phase 6]
+```
+
+### Trust boundaries
+
+The property that makes bring-your-own-model safe: **the agent emits numbers, never
+shape.** All geometry authority lives server-side.
+
+| Boundary | What crosses | Enforced by | On failure |
+|---|---|---|---|
+| Human → Agent | ambiguous English | nothing, by design | Gate 1 read-back catches it |
+| Agent → Server | JSON params | `extra="forbid"` + `_validate()` | tool error, agent self-corrects |
+| Server → Machine | G-code, REST | `bed_confirmed_clear`, state check, split upload/start | print refused |
+
+---
+
+## Portability — the server cannot assume Claude
+
+Once this is open sourced, the connecting client is arbitrary. That changes where
+safety is allowed to live.
+
+| Ships with the server — every client sees it | Claude Code only |
+|---|---|
+| MCP tool descriptions | `CLAUDE.md` |
+| JSON schemas + field descriptions | |
+| Python validation and its error messages | |
+| `config/defaults.toml` house rules | |
+
+**Rule:** if a constraint is safety-critical it goes in the left column. `CLAUDE.md` is
+developer context, never a control. A rule that exists only there does not exist for an
+OpenCode user.
+
+Two consequences to build to:
+
+- **Server-side validation is the only guarantee.** The original plan leaned on
+  constrained decoding to stop a model inventing a field. We do not control the
+  client's decoder, so `extra="forbid"` and the cross-field `_validate()` are the real
+  gate, not a second line of defence.
+- **Tool descriptions carry the house rules.** Dimensions are OUTER unless stated,
+  defaults come from `config/defaults.toml`, templates are a fixed whitelist and there
+  is no freeform geometry path. Every client reads these; none of them read `CLAUDE.md`.
 
 ---
 
@@ -31,7 +145,7 @@ voice-to-print/
 ├── CLAUDE.md                   # agent context (see appendix)
 ├── pyproject.toml
 ├── config/
-│   ├── ender3_profile.ini      # dialed-in slicer profile — hand-tuned, not generated
+│   ├── ender3_v3se.ini         # dialed-in slicer profile — hand-tuned, not generated
 │   └── defaults.toml           # wall thickness, clearances, house rules
 ├── src/vtp/
 │   ├── templates/
@@ -40,7 +154,7 @@ voice-to-print/
 │   ├── cad.py                  # template dispatch → STL + preview PNGs
 │   ├── slicer.py               # STL → G-code + metadata
 │   ├── printer.py              # OctoPrint REST client
-│   ├── extract.py              # NL → template params (LLM)
+│   ├── extract.py              # OPTIONAL, Phase 7 only — NL → params without a CLI
 │   └── server.py               # MCP server exposing the tools
 ├── output/                     # generated STL / PNG / gcode, gitignored
 └── tests/
@@ -52,14 +166,26 @@ voice-to-print/
 
 **No code until every box is checked.** An agent that can start prints on command makes it very easy to start one carelessly.
 
-- [ ] Identify Ender 3 mainboard revision and firmware version
-- [ ] Confirm `THERMAL_RUNAWAY_PROTECTION` is enabled. Some older Creality boards shipped with it disabled in stock firmware — if you're on an old v1.1.4 with 2018-era Marlin, reflash to current Marlin before proceeding.
-- [ ] Inspect hotend heater cartridge and thermistor wiring for wear or crimp damage (classic Ender 3 failure point)
+**The machine is a Creality Ender-3 V3 SE** — confirmed from the `TARGET_MACHINE.NAME`
+header of a known-good print. Not a classic Ender 3: different mainboard, CR Touch
+auto-levelling, higher stock accelerations, and start G-code that is not interchangeable.
+
+- [x] Identify mainboard revision and firmware version — Ender-3 V3 SE, stock Marlin
+- [ ] Confirm `THERMAL_RUNAWAY_PROTECTION` is enabled. Stock V3 SE firmware ships with it on; verify rather than assume, and reflash to current Marlin if anything looks off.
+- [ ] Inspect hotend heater cartridge and thermistor wiring for wear or crimp damage (a classic Creality failure point across the whole line)
 - [ ] Working smoke detector in the room
 - [ ] Printer on a non-combustible surface, not pushed against a wall
-- [ ] OctoPrint installed on the Pi, connected over USB, can jog axes and read temps from the web UI
-- [ ] Generate an OctoPrint API key (Settings → Application Keys). Store as `OCTOPRINT_API_KEY` in `.env` — never commit it.
-- [ ] PrusaSlicer installed on the laptop; slice one STL by hand and confirm the result prints correctly. **That saved `.ini` becomes `config/ender3_profile.ini`.**
+- [x] OctoPrint installed on the Pi, connected over USB, can jog axes and read temps from the web UI — OctoPrint 1.11.8, `/dev/ttyUSB0` @ 115200, state Operational
+- [x] Generate an OctoPrint API key. Stored as `OCTOPRINT_API_KEY` in `.env`; handshake verified with `GET /api/version` → HTTP 200
+- [ ] PrusaSlicer installed on the laptop; slice one STL by hand and confirm the result prints correctly. **That saved `.ini` becomes `config/ender3_v3se.ini`.**
+
+**Slicer history:** the first verified print (`BNO_Case.gcode`) came out of Cura
+5.13.0, which proves the machine and the geometry but does not give us an automatable
+profile — Cura's settings inheritance lives in its GUI, not its engine. PrusaSlicer was
+chosen for automation because its CLI is stable and its config is a single flat `.ini`,
+matching how this repo already treats the profile. The Cura start G-code is the
+reference to port from; `M420 S1` (use saved mesh levelling) is the load-bearing line a
+stock Ender-3 profile will not have.
 
 ---
 
@@ -139,60 +265,89 @@ def slice_stl(stl_path: Path, profile: Path, output: Path) -> SliceResult
 
 ---
 
-## Phase 4 — LLM parameter extraction
+## Phase 4 — Parameter extraction (mostly deleted; see Phase 5)
 
-`src/vtp/extract.py`. This is the only LLM-touching module.
+**Superseded.** This phase originally built `src/vtp/extract.py` around a local Qwen3 8B
+via Ollama. With the MCP server as the product, the connecting CLI already has a model,
+and that model does extraction by reading the tool's JSON schema. A second model inside
+the server is a redundant hop.
 
-The model's job is **natural language → JSON params for a known template**, nothing else. It never writes geometry code, never plans the workflow, never decides whether to print.
+So there is **no `extract.py` to build here.** What that module was responsible for is
+now split:
 
-### Model: local, 8B class
+| Was Phase 4's job | Now |
+|---|---|
+| NL → template choice + params | the client CLI's model, against `model_json_schema()` |
+| Constrained decoding | the client's concern; the server does not trust it |
+| Schema validation | `src/vtp/templates/` Pydantic models — server-side, mandatory |
+| Read-back sentence | already built: `resolved_spec_sentence()` in the template |
+| "needs clarification" branch | the CLI's own conversation; it can just ask |
+| "no template fits" branch | `UnknownTemplateError` from the registry |
 
-This task is small enough to run locally. Default to **Qwen3 8B via Ollama**. Test **Qwen3 4B** — it may well be sufficient and is fast enough to vanish into the latency budget. Llama 3.1 8B is the fallback if Qwen misbehaves.
+### What survives, and is now more important
 
-- ~6GB at Q4. Fine on 16GB unified memory or an 8GB+ VRAM GPU. CPU-only works but expect 3–5s, which gets annoying once voice is in front of it.
-- Set `keep_alive` so the model stays resident. Cold-loading per request is what makes local feel slow, not inference.
-- Context is ~1,500 tokens (template registry + house defaults). Each call is independent — **no conversation history**. Nothing accumulates.
+The original safety argument was *"constrained decoding means the model cannot invent a
+field."* That guarantee is gone — we do not control an arbitrary client's decoder. Its
+replacement is server-side validation, which already exists and is tested:
 
-**Make the backend a config value.** One `LLM_BACKEND` env var, one `extract()` signature, Ollama and a frontier API behind the same interface. Develop against local; flipping to an API for this one call costs approximately nothing at 1,500 tokens per part.
+- `extra="forbid"` on every params model, so an invented field is a hard error
+- cross-field `_validate()`, so geometrically impossible params never reach build123d
+- error messages that **name the offending value**, because they are the client model's
+  only feedback signal for self-correction
 
-### Constrained decoding is mandatory
+Treat those three as load-bearing, not as defensive extras.
 
-This matters more than model size. Use Ollama's structured output (`format` = JSON schema) or llama.cpp GBNF grammars to force schema-valid output at the token level.
+### Read-backs stay in Python
 
-With it, an 8B model *cannot* emit malformed JSON or invent a field — the worst failure becomes "slightly wrong number," which Gate 1 catches. Without it, you'll spend a week fighting trailing commas and markdown fences.
-
-### Output contract
-
-Three legal branches, all schema-enforced:
-
-1. `{"template": "box_with_lid", "params": {...}}` — normal path, validated against that template's Pydantic model
-2. `{"needs_clarification": true, "question": "..."}` — request is underspecified. **This branch must exist.** Without a legal way to punt, a small model will guess and confabulate.
-3. `{"needs_template": true, "reason": "..."}` — no template fits. Stop. No freeform codegen fallback in v1.
-
-### Build the read-back in Python, not the model
-
-The resolved-spec sentence is the highest-value output in the pipeline:
+Unchanged and still the highest-value output in the pipeline:
 
 > "Outer 50×40×20mm, 2mm walls, press-fit lid at 0.25mm clearance, 1mm edge fillet. Usable interior 46×36×18mm."
 
-Template it from the **validated params** rather than asking the model to write prose. 8B models write this flatly, and generating it in code is both better and free. It also guarantees the sentence reflects what will actually be built, not what the model intended.
+Templated from **validated params**, never written by a model. It reflects what will
+actually be built rather than what any model intended — which matters more now that the
+model could be anything.
 
-### Eval set — build this before tuning anything
+### When `extract.py` comes back
 
-`tests/eval_extraction.json`: 20 real phrasings with expected params. `pytest` asserts the match.
+Only for a **standalone voice loop with no agent CLI in it** (see Phase 7). If voice
+drives Claude Code or another CLI, it is never needed. Do not build it speculatively.
 
-Twenty minutes of work. It turns "which model is better" from a vibe into a number, and it catches regressions when you add templates and the registry prompt grows. Include deliberately underspecified requests that should return branch 2.
+### Eval set — still worth building
+
+`tests/eval_extraction.json`: 20 real phrasings with expected params. Now it evaluates
+**the client model**, not a module you own — run it through whichever CLI you are
+targeting. It turns "does this work with OpenCode / a local model / Haiku" from a vibe
+into a number, and it catches regressions when the registry grows and tool descriptions
+get longer. Include deliberately underspecified requests where the right answer is
+asking the user rather than guessing.
 
 ---
 
 ## Phase 5 — MCP server + approval gates
 
-`src/vtp/server.py`. Tools exposed:
+`src/vtp/server.py`. **This is the product** — everything above it is the user's choice
+of client and model. Tools exposed:
 
-- `design_part(description: str)` → resolved spec, STL paths, preview PNG paths
+- `list_templates()` → name → description, plus each template's JSON schema
+- `design_part(template: str, params: dict)` → resolved spec, STL paths, preview PNG paths
 - `slice_part(stl_path: str)` → time estimate, grams, layer count, gcode path
 - `start_print(gcode_path: str, bed_confirmed_clear: bool)` → job id
 - `get_printer_status()` → state, temps, progress
+
+**`design_part` takes a template name and params, not a free-text description.** The
+client's model picks the template and fills the schema — that is the whole design. A
+`description: str` parameter would smuggle extraction back inside the server and
+recreate the Phase 4 that was just deleted.
+
+**Tool descriptions are the portable `CLAUDE.md`.** They ship with the server and every
+client reads them, so the house rules live there: dimensions are OUTER unless stated,
+defaults come from `config/defaults.toml`, templates are a fixed whitelist, there is no
+freeform geometry path. See [Portability](#portability--the-server-cannot-assume-claude).
+
+**Build it incrementally.** `list_templates` and `design_part` depend only on Phase 1
+and can ship before a slicer or printer exists — that vertical slice is what proves the
+bring-your-own-model thesis. Do not add `slice_part` or `start_print` as stubs; an
+unimplemented print tool in the schema is an invitation.
 
 **Two mandatory human gates. Neither is skippable.**
 
@@ -220,7 +375,34 @@ Only after 0–6 work reliably by text. Push-to-talk, not always-on wake word, f
 
 - `faster-whisper` (large-v3-turbo) for STT
 - Kokoro or Piper for TTS — **not Coqui XTTS**, which is abandoned and non-commercially licensed
-- Point it at the same MCP server. No pipeline changes should be needed.
+
+**Voice is a frontend that drives an agent CLI, not a second pipeline.** It converts
+speech to text, hands the text to the CLI, and speaks the reply. It does not talk to the
+MCP server directly and it does not need its own model. Two integration options:
+
+| Option | How | Trade-off |
+|---|---|---|
+| Headless CLI calls | shell out per utterance (`claude -p …`) | Simplest. Each turn is largely standalone |
+| Persistent agent session | Claude Agent SDK, one long-lived session | Multi-turn works — *"make it 5mm taller"* resolves against the previous part. Preferred |
+
+The persistent-session path is what makes it feel like an assistant rather than a
+command line with a microphone. Verify the exact CLI/SDK surface when this phase
+starts rather than trusting the flags written here.
+
+Only if you want voice **without** any agent CLI does `extract.py` come back — a small
+local model doing NL → params directly against the template schema. Do not build that
+until it is actually needed.
+
+### Two hard constraints on the voice layer
+
+- **Gate 1 needs a screen.** The point of that gate is looking at the preview render,
+  and a 3D shape cannot be reviewed by ear. `resolved_spec_sentence` confirms the
+  *numbers* well and the *shape* not at all. Keep a display in the loop.
+- **Gate 3 must not be reachable from a transcript.** `bed_confirmed_clear` is supplied
+  by a human through a non-voice channel — typed token, phone tap, physical button.
+  Never inferred from ASR output. *"Sure, go ahead"* is a cheap utterance, STT
+  mishears, and the thing on the other end heats to 200°C. Voice may design and slice
+  freely; something else starts the print.
 
 ---
 
@@ -254,8 +436,18 @@ recording which phases are done and which Phase 1 decisions overrode the text ab
 
 ---
 
-## Suggested first prompt to Claude Code
+## Working rhythm
 
-> Read BUILD_PLAN.md. We're starting Phase 1 only. Scaffold the repo per the layout, then implement `src/vtp/templates/box.py` and `src/vtp/cad.py`. Write pytest tests asserting bounding box and that lid outer dims minus clearance match body inner dims. Do not implement slicing, printer control, or the MCP server yet. Stop when tests pass and I'll print the result.
+One phase per session, and within a phase, one feature at a time on the human's call.
+The temptation is to let an agent build the whole thing at once, and then you are
+debugging a voice pipeline and a slicer config simultaneously with no known-good
+baseline.
 
-Keep it to one phase per session. The temptation is to let it build the whole thing at once, and then you're debugging a voice pipeline and a slicer config simultaneously with no known-good baseline.
+Phase 1 is done and physically verified. The next unblocked work is the Phase 5 vertical
+slice — `list_templates` + `design_part` only, no slicer, no printer. That proves an
+arbitrary MCP client can design a part end to end, which is the thesis this whole
+re-architecture rests on.
+
+Phases 2 and 3 stay blocked until Phase 0 is signed off: **no slicer installed on this
+machine and no `config/ender3_v3se.ini`.** That file must come from a hand-tuned
+PrusaSlicer export — never generated.
