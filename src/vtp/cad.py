@@ -13,12 +13,19 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from build123d import Location, Mesher, Part, export_stl
+from build123d import Compound, Location, Mesher, Part, export_stl
 
-from vtp.config import OUTPUT_DIR, export_tolerances
+from vtp.config import OUTPUT_DIR, bed_violations, export_tolerances, plate_margin
 from vtp.templates import TEMPLATE_REGISTRY, get_template
 
-__all__ = ["DesignResult", "design", "export_review_model", "render_preview"]
+__all__ = [
+    "DesignResult",
+    "arrange_along_x",
+    "design",
+    "export_plate",
+    "export_review_model",
+    "render_preview",
+]
 
 #: (elevation, azimuth) for the two preview views.
 _VIEWS: dict[str, tuple[float, float]] = {
@@ -40,12 +47,23 @@ class DesignResult:
     inner_dims: tuple[float, float, float] | None = None
     #: One 3MF holding every part, spaced out — what the viewer opens. Never sliced.
     review_path: Path | None = None
+    #: One STL holding every part in the same arrangement — what the slicer gets.
+    plate_path: Path | None = None
+    plate_size: tuple[float, float, float] | None = None
+    #: Why the plate will not fit, if it will not. Empty when it fits.
+    plate_bed_violations: tuple[str, ...] = ()
 
     def summary(self) -> str:
         """Human-readable block for the approval gate."""
         lines = [self.spec_sentence, ""]
         for part, (x, y, z) in self.bounding_boxes.items():
             lines.append(f"  {part:<6} {x:g} x {y:g} x {z:g} mm  ->  {self.stl_paths[part].name}")
+        if self.plate_path and self.plate_size:
+            x, y, z = self.plate_size
+            fits = "" if not self.plate_bed_violations else "  DOES NOT FIT THE BED"
+            lines.append(
+                f"  {'plate':<6} {x:g} x {y:g} x {z:g} mm  ->  {self.plate_path.name}{fits}"
+            )
         return "\n".join(lines)
 
 
@@ -98,6 +116,13 @@ def design(
 
     review_path = export_review_model(parts, spec.part_names, target / f"{stem}_review.3mf")
 
+    # Written for every template, including a hypothetical one-part one — where it is
+    # simply that part at the origin. Predictability is worth more than the file it
+    # saves: "slice the plate" stays one unconditional instruction to the client model.
+    plate_path = export_plate(parts, target / f"{stem}_plate.stl")
+    plate_bbox = Compound(children=arrange_along_x(parts)).bounding_box().size
+    plate_size = (plate_bbox.X, plate_bbox.Y, plate_bbox.Z)
+
     return DesignResult(
         template=spec.name,
         params=validated.model_dump(),
@@ -107,12 +132,57 @@ def design(
         preview_paths=preview_paths,
         inner_dims=spec.inner_dims(validated),
         review_path=review_path,
+        plate_path=plate_path,
+        plate_size=plate_size,
+        # The margin covers what the raw bounding box does not: a skirt loop, and the
+        # prime lines the start G-code draws down the left edge of the bed.
+        plate_bed_violations=tuple(bed_violations(plate_size, margin=plate_margin())),
     )
 
 
-#: Gap between parts in the review scene, in mm. Wide enough to read as separate
-#: objects at a glance, narrow enough that a two-part design still fits the bed.
-REVIEW_GAP = 8.0
+#: Gap between parts, in mm. Wide enough to read as separate objects at a glance,
+#: narrow enough that a two-part design still fits the bed.
+#:
+#: Used by BOTH the review 3MF and the printed plate, and that shared use is the
+#: guarantee: what the human approves at Gate 1 is where the parts actually land.
+#: Give the plate its own spacing and the preview quietly stops meaning anything.
+PART_GAP = 8.0
+
+
+def arrange_along_x(parts: Sequence[Part], gap: float = PART_GAP) -> list[Part]:
+    """Lay parts side by side along X, the row centred on the origin.
+
+    Y and Z are untouched, so every part keeps the print pose it was built in —
+    sitting on Z=0, which is where a slicer needs it.
+
+    This is the one place a multi-part layout is decided. Both callers use it.
+    """
+    widths = [part.bounding_box().size.X for part in parts]
+    total = sum(widths) + gap * (len(widths) - 1)
+
+    placed = []
+    cursor = -total / 2
+    for part, width in zip(parts, widths):
+        placed.append(part.moved(Location((cursor + width / 2, 0, 0))))
+        cursor += width + gap
+    return placed
+
+
+def export_plate(parts: Sequence[Part], path: Path) -> Path:
+    """Write every part into one STL, arranged exactly as the review 3MF shows them.
+
+    This is what gets sliced when the human wants both parts in one job: one heat-up,
+    one bed check, one print. The per-part STLs are still written and are still the
+    right input for reprinting a single part.
+
+    **One STL is one PrusaSlicer object**, so the slicer's default centring moves the
+    whole arrangement as a unit and the relative layout survives. Do not "improve"
+    this by passing the parts as separate STLs with ``--merge``: PrusaSlicer would
+    then arrange them itself and the preview-equals-print guarantee would die
+    silently, with nothing failing to say so.
+    """
+    _export(Compound(children=arrange_along_x(parts)), path)
+    return path
 
 
 def export_review_model(
@@ -124,20 +194,16 @@ def export_review_model(
     a slicer needs them — each centred on the origin in print pose — and that is
     precisely why they cannot be shown as they are: handed to a viewer together,
     the body and its lid occupy the same space and you see one shape where there
-    are two. Spacing them is a property of the *review*, not of the parts, so it
-    lives in a separate file rather than moving the geometry anyone prints.
+    are two.
+
+    The arrangement comes from :func:`arrange_along_x`, the same function the printed
+    plate uses. That is deliberate: the whole point of showing a layout is that it is
+    the layout that gets printed.
 
     Positions are baked into the mesh coordinates, so no viewer has to be asked
     politely to arrange anything.
     """
-    widths = [part.bounding_box().size.X for part in parts]
-    total = sum(widths) + REVIEW_GAP * (len(widths) - 1)
-
-    placed = []
-    cursor = -total / 2
-    for part, width in zip(parts, widths):
-        placed.append(part.moved(Location((cursor + width / 2, 0, 0))))
-        cursor += width + REVIEW_GAP
+    placed = arrange_along_x(parts)
 
     linear, angular = export_tolerances()
     mesher = Mesher()

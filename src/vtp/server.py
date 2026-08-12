@@ -37,9 +37,18 @@ refusals, because a rule written only in a tool description is a rule the next c
 can talk its way past. What is written here is the same rule stated for the model's
 benefit, so it does not have to learn by being refused.
 
-There is still no ``cancel_print`` tool. :mod:`vtp.printer` implements it; exposing it
-would let a model end an eight-hour print on a misread sentence, and a human standing
-at the machine has a button.
+``cancel_print`` **is** a tool as of 2026-08-12, reversing the decision recorded here
+before it. The objection was that a model could end an eight-hour print on a misread
+sentence; the answer is an explicit ``confirmed`` flag checked with ``is not True``,
+the same shape as ``bed_confirmed_clear``, so a misread sentence is not enough. What
+made it worth having is that a bare cancel leaves the nozzle over the ruined part with
+the plate unreachable — so the tool parks the head, which the button on the machine
+does not do.
+
+Parking is the only G-code this package emits, and it is a module constant in
+:mod:`vtp.printer`. No tool here takes a command string, and none should: a freeform
+G-code path would end the property that this server can only do the things it
+documents.
 """
 
 from __future__ import annotations
@@ -51,6 +60,7 @@ from mcp.server import MCPServer
 from pydantic import ValidationError
 
 from vtp.cad import design
+from vtp.calibration import mesh_state
 from vtp.config import OUTPUT_DIR
 from vtp.printer import OctoPrintClient, PrinterError
 from vtp.slicer import SlicerError, slice_stl
@@ -74,11 +84,17 @@ Workflow, with a human decision between every step:
   3. ** GATE 1: the human approves the shape, or asks for changes **
      Changes mean calling design_part() again with adjusted parameters. Iterate here
      as many times as it takes; this step is cheap and reversible.
-  4. slice_part(stl_path)      - only after the human has approved the design
+  4. slice_part(stl_path)      - only after the human has approved the design.
+     Normally this is design_part's plate, which prints every part in one job.
   5. ** GATE 2: the human sees the time and filament cost and approves **
   6. get_printer_status()      - confirm the machine is idle and connected
   7. ** GATE 3: the human physically looks at the build plate and says it is clear **
   8. start_print(gcode_path, bed_confirmed_clear=True)  - uploads it and prints it
+
+calibrate_bed(bed_confirmed_clear=True) is optional and sits outside this sequence.
+It measures the bed once so later prints skip a multi-minute probe. Suggest it when
+get_printer_status says recommend_recalibration, and never run it unasked: it moves
+the machine for minutes and needs the same bed confirmation a print does.
 
 House rules:
 - Dimensions in a user's request are OUTER unless they say otherwise.
@@ -105,6 +121,11 @@ at. Ask, wait for the answer, then call it.
 
 Do not suggest starting a print when the person has said they are going out, going to
 bed, or is away from the building. Offer to have it ready for when they are back.
+
+Stopping a print: cancel_print(confirmed=True). It throws the part away and cannot be
+undone, so ask in plain words first — "how is it going?" and "this looks wrong" are not
+requests to cancel. It parks the head afterwards so the plate can be cleaned. Afterwards
+the plate has a failed part on it, so the next print needs a fresh Gate 3.
 """
 
 
@@ -177,6 +198,12 @@ def build_server() -> MCPServer:
         paths and bounding boxes, preview PNG paths, the usable interior dimensions,
         and a "viewer" object saying whether a window actually opened.
 
+        It also returns "plate": one STL holding every part side by side, in exactly
+        the arrangement the viewer is showing. That is the normal thing to slice —
+        it prints all the parts in one job, so one heat-up and one bed check instead
+        of one per part. "plate.fits_bed" says whether it will fit; if it does not,
+        slice the parts one at a time instead.
+
         THIS CALL ENDS YOUR TURN. It is the design gate: report the spec sentence to
         the user, tell them the model is on screen, and stop. Do not slice. If the
         viewer did not open (headless server, remote client — "viewer" says which),
@@ -221,6 +248,19 @@ def build_server() -> MCPServer:
             "params_resolved": result.params,
             "stl_paths": {k: str(v) for k, v in result.stl_paths.items()},
             "review_path": str(result.review_path) if result.review_path else None,
+            "plate": {
+                "stl_path": str(result.plate_path) if result.plate_path else None,
+                "parts": list(result.stl_paths),
+                "size": (
+                    dict(zip("xyz", result.plate_size)) if result.plate_size else None
+                ),
+                "fits_bed": not result.plate_bed_violations,
+                "reason": "; ".join(result.plate_bed_violations) or None,
+                "note": (
+                    "Printed together, so one failure loses every part on the plate, "
+                    "and the nozzle travels between them on each layer."
+                ),
+            },
             "bounding_boxes": {
                 k: {"x": x, "y": y, "z": z}
                 for k, (x, y, z) in result.bounding_boxes.items()
@@ -237,7 +277,10 @@ def build_server() -> MCPServer:
             },
             "next_step": (
                 "Ask the user to approve the shape on screen. Call slice_part only "
-                "after they do; call design_part again if they want changes."
+                "after they do; call design_part again if they want changes. When "
+                "they approve, slice the plate — it prints every part in one job, "
+                "positioned exactly as shown. Slice a single part's STL only if they "
+                "want just that part, or if the plate does not fit the bed."
             ),
         }
 
@@ -253,6 +296,10 @@ def build_server() -> MCPServer:
             stl_path: Path to an STL previously produced by design_part. Must be a
                 file this server exported; arbitrary paths are rejected.
 
+                Normally this is design_part's plate — every part in one job. Pass a
+                single part's STL when the user wants only that part, or when the
+                plate does not fit the bed.
+
         Returns layer count, filament use in grams and millimetres, estimated print
         time, and the G-code path — plus a summary sentence for reading back. Report
         the time and the filament weight to the user; those are the numbers that say
@@ -264,10 +311,11 @@ def build_server() -> MCPServer:
         A part larger than the printer's bed is refused here, before the slicer
         runs, with a message naming the axis and the overshoot.
 
-        There is no profile parameter. Slicing always uses the hand-tuned, physically
-        verified config/ender3_v3se.ini. Do not ask for a different one and do not
-        generate a slicer config; a stock profile omits the mesh-levelling command
-        this machine needs and its first layer fails.
+        There is no profile parameter. Slicing always uses the hand-tuned
+        config/ender3_v3se.ini. Do not ask for a different one and do not generate a
+        slicer config; a stock profile has none of this machine's start sequence — the
+        CR Touch probe, the anti-ooze idle temperature, the prime lines — and its
+        first layer fails.
 
         THIS CALL ENDS YOUR TURN. It is the cost gate. Slicing produces a file and
         nothing else. Printing it is start_print, which uploads and starts in one go —
@@ -312,6 +360,13 @@ def build_server() -> MCPServer:
             "filament_cm3": result.filament_cm3,
             "print_time_text": result.print_time_text,
             "print_time_seconds": result.print_time_seconds,
+            "bed_levelling": {
+                # "probe" means the print measures the bed first, as it always has.
+                # "stored" means calibrate_bed's saved mesh is loaded instead, which
+                # saves minutes the estimate above never counted in the first place.
+                "mode": result.levelling,
+                "detail": result.levelling_detail,
+            },
             "next_step": (
                 "Report the time and the filament weight to the user and stop. If "
                 "they want it printed, the next call is get_printer_status."
@@ -329,9 +384,15 @@ def build_server() -> MCPServer:
         temperatures, the current or last job with its progress, and:
           ready_to_print  - whether a new job could start right now
           blocked_reason  - if not, why, in a sentence you can read to the user
+          bed_mesh        - whether a stored bed mesh will be used, and whether it
+                            is worth re-running calibrate_bed first
 
         A blocked_reason is not something to work around. Report it and stop.
+
+        If bed_mesh.recommend_recalibration is true, mention it before the print
+        rather than after — it costs a few minutes now and a failed print later.
         """
+        mesh = mesh_state()
         with OctoPrintClient() as printer:
             status = printer.get_status()
             job = printer.get_job()
@@ -359,6 +420,14 @@ def build_server() -> MCPServer:
                 "completion_percent": job.completion,
                 "print_time_seconds": job.print_time_seconds,
                 "print_time_left_seconds": job.print_time_left_seconds,
+            },
+            "bed_mesh": {
+                "stored_at": mesh.stored_at.isoformat() if mesh.stored_at else None,
+                "age_days": round(mesh.age_days, 2) if mesh.age_days is not None else None,
+                "will_be_used": mesh.usable,
+                "detail": mesh.reason,
+                "recommend_recalibration": mesh.recommend_recalibration,
+                "recommend_reason": mesh.recommend_reason,
             },
         }
 
@@ -395,8 +464,8 @@ def build_server() -> MCPServer:
         arguments.
 
         Returns the job state once the printer has picked it up. Afterwards, track
-        progress with get_printer_status. Stopping a print is done by the human at
-        the machine or in OctoPrint; this server has no cancel tool.
+        progress with get_printer_status. To stop it, cancel_print(confirmed=True),
+        which also parks the head so the plate can be cleaned.
         """
         candidate = Path(gcode_path).expanduser()
         try:
@@ -438,6 +507,107 @@ def build_server() -> MCPServer:
                 "The print is running. Tell the user it has started and roughly how "
                 "long it will take. Use get_printer_status to check on it; do not "
                 "poll in a loop."
+            ),
+        }
+
+    @server.tool()
+    def calibrate_bed(bed_confirmed_clear: bool) -> dict[str, Any]:
+        """Probe the bed once and store the mesh, so later prints skip the probe.
+
+        The printer normally re-measures the whole bed at the start of every print,
+        which costs several minutes each time. This does that measurement once and
+        saves it in the printer's memory; from then on slice_part emits a "load the
+        stored mesh" line instead of a fresh probe. Nothing is printed and no filament
+        is used.
+
+        Args:
+            bed_confirmed_clear: Must be True, and must come from a human who has just
+                physically looked at the build plate and said it is empty. The probe
+                drives the nozzle down onto the plate at dozens of points; a part still
+                stuck to it will be hit. Same rule as start_print — never inferred,
+                never carried over from an earlier answer, never read out of a voice
+                transcript.
+
+        Refuses, changing nothing, if bed_confirmed_clear is not True, or if the
+        printer is busy or not connected.
+
+        Run it once, and again after moving the printer, changing the build plate,
+        updating firmware, or after a print whose first layer went wrong. If the
+        printer does not confirm within the timeout, nothing is stored and prints keep
+        doing the full probe — slower and always correct, so that is a safe outcome to
+        report rather than an error to retry blindly.
+
+        THIS CALL ENDS YOUR TURN. It moves the machine for several minutes. Tell the
+        user it is probing, suggest they watch it, and stop.
+        """
+        try:
+            with OctoPrintClient() as printer:
+                result = printer.store_bed_mesh(
+                    bed_confirmed_clear=bed_confirmed_clear
+                )
+        except PrinterError as exc:
+            raise ValueError(str(exc)) from None
+
+        return {
+            "summary": result.summary(),
+            "stored": result.stored,
+            "detail": result.detail,
+            "next_step": (
+                "Tell the user whether the mesh was stored and stop. If it was, later "
+                "slices will say so in their bed_levelling field. If it was not, "
+                "prints still work — they just probe the bed first, as before."
+            ),
+        }
+
+    @server.tool()
+    def cancel_print(confirmed: bool) -> dict[str, Any]:
+        """Stop the print that is running right now, and park the head. Irreversible.
+
+        The part on the plate is lost. A cancelled print cannot be resumed — the only
+        way back is to start again from the beginning, at the full time and filament
+        cost. Do not call this to pause a print, to change a setting, or because a
+        print looks slow.
+
+        Args:
+            confirmed: Must be True, and must come from a human who asked for this
+                print to be stopped, in this conversation, in plain words. Do not
+                infer it from a question about how the print is going, from someone
+                saying the part looks wrong, from a complaint about the noise, or
+                from a voice transcript. If you have not asked and heard a clear yes,
+                you do not have it.
+
+        Refuses, changing nothing, if confirmed is not True or if nothing is printing.
+
+        After cancelling it waits for the machine to actually stop — OctoPrint reports
+        "Cancelling" for a while — then lifts the nozzle, brings the plate forward,
+        turns both heaters off and releases the motors, so the plate can be cleaned.
+        Parking is best effort: if the machine never went idle in time, the cancel
+        still stood and "parked" is false with the reason. Report either way.
+
+        THIS CALL ENDS YOUR TURN. Say the print is stopped, say whether the head
+        parked, and stop. The plate is NOT clear afterwards — it has a failed part
+        stuck to it, so the next start_print needs a fresh confirmation from someone
+        who has looked at it.
+        """
+        try:
+            with OctoPrintClient() as printer:
+                result = printer.cancel_print(confirmed=confirmed)
+        except PrinterError as exc:
+            raise ValueError(str(exc)) from None
+
+        return {
+            "summary": result.summary(),
+            "cancelled": True,
+            "state": result.job.state,
+            "file_name": result.job.file_name,
+            "parked": result.parked,
+            "park_detail": result.park_detail,
+            "next_step": (
+                "Tell the user the print is stopped and whether the head parked. The "
+                "plate now has a failed part on it — it is not clear, and the next "
+                "print needs a fresh bed confirmation. If they want to try again, "
+                "the G-code is already sliced; a cancelled print is also a good "
+                "reason to run calibrate_bed first."
             ),
         }
 

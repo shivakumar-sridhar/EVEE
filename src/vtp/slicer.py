@@ -5,10 +5,19 @@ against one hand-tuned profile, and the numbers it reports are read back out of 
 G-code rather than estimated.
 
 **The profile is not a parameter the client chooses.** :func:`slice_stl` takes one so
-tests can point at a fixture, but it defaults to the verified
+tests can point at a fixture, but it defaults to the hand-tuned
 ``config/ender3_v3se.ini`` and the MCP tool exposes no way to override it. A generated
-or stock profile omits ``M420 S1``, the CR Touch mesh is then ignored, and the first
-layer fails — so "which profile" is not a decision worth delegating.
+or stock profile has none of this machine's start sequence — the CR Touch probe, the
+anti-ooze idle temperature, the prime lines — and its first layer fails. So "which
+profile" is not a decision worth delegating.
+
+**Bed levelling is decided here, after the export, not in the profile.** The profile
+keeps ``G29``, which is always correct. When ``calibrate_bed`` has actually stored a
+mesh and it is not stale, :func:`_apply_stored_mesh` rewrites that one line to
+``M420 S1`` so the print skips a multi-minute probe. Every uncertain case leaves the
+file untouched, because ``M420 S1`` against a mesh the printer does not have fails
+silently — it prints on a flat plane and complains only to the serial console. See
+:mod:`vtp.calibration`.
 
 **PrusaSlicer writes progress to stdout.** Under the stdio transport that stream is
 JSON-RPC, so the child's output is captured, never inherited. Letting it through would
@@ -17,12 +26,14 @@ corrupt the protocol rather than merely look untidy.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from vtp.calibration import mesh_state
 from vtp.config import (
     OUTPUT_DIR,
     bed_violations,
@@ -55,6 +66,11 @@ _LAYER_MARKER = ";LAYER_CHANGE"
 _DURATION_TOKEN = re.compile(r"(\d+)\s*([dhms])")
 _DURATION_SCALE = {"d": 86400, "h": 3600, "m": 60, "s": 1}
 
+#: The exact line the verified profile emits, and the anchor for the stored-mesh swap.
+#: Its spelling is part of an interface even though it looks like ordinary G-code —
+#: ``tests/test_profile.py`` asserts the profile still produces it.
+_G29_LINE = "G29 ; auto bed levelling"
+
 
 @dataclass(frozen=True)
 class SliceResult:
@@ -69,6 +85,10 @@ class SliceResult:
     filament_mm: float
     filament_cm3: float
     layer_count: int
+    #: ``"probe"`` (the profile's G29, unchanged) or ``"stored"`` (M420 S1 swapped in).
+    #: Defaulted so callers constructing this by keyword keep working.
+    levelling: str = "probe"
+    levelling_detail: str = ""
 
     def summary(self) -> str:
         """Read-back line for the approval gate.
@@ -76,11 +96,65 @@ class SliceResult:
         Templated here in Python from parsed values, never written by a model —
         the same rule the design gate's spec sentence follows.
         """
-        return (
+        line = (
             f"{self.stl_path.name} -> {self.gcode_path.name}: "
             f"{self.layer_count} layers, {self.filament_g:g} g "
             f"({self.filament_mm:g} mm), about {self.print_time_text}."
         )
+        if self.levelling == "stored":
+            # Worth saying out loud: the time above does NOT include the probe and
+            # never did, so this saving is invisible in the estimate.
+            line += " Bed: loading the stored mesh instead of probing."
+        return line
+
+
+def _apply_stored_mesh(gcode_path: Path) -> tuple[str, str]:
+    """Swap the full bed probe for the stored mesh, if there is a trustworthy one.
+
+    Returns ``(mode, detail)`` where mode is ``"probe"`` or ``"stored"``.
+
+    Done here, on the exported file, rather than in the profile. The profile is the
+    one hand-tuned artefact in this repo and it stays the source of the start
+    sequence: it keeps ``G29``, which is always correct, and this rewrites exactly one
+    line of the output when — and only when — a mesh has demonstrably been stored.
+    A second profile would fork the verified file; passing ``--start-gcode`` would put
+    a second copy of that twenty-line sequence in Python, where it would drift.
+
+    Every uncertain case leaves the file alone. If the anchor is missing or appears
+    more than once the profile has changed underneath us, and the safe reading of that
+    is "probe the bed", not "guess which line was meant".
+    """
+    state = mesh_state()
+    if not state.usable:
+        return "probe", state.reason
+
+    text = gcode_path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines(keepends=True)
+    hits = [i for i, line in enumerate(lines) if line.strip() == _G29_LINE]
+
+    if len(hits) != 1:
+        return "probe", (
+            f"expected exactly one {_G29_LINE!r} line in the exported G-code but "
+            f"found {len(hits)}, so the bed probe was left alone. The profile's "
+            f"start_gcode may have changed."
+        )
+
+    when = state.stored_at.strftime("%Y-%m-%d %H:%M UTC") if state.stored_at else "?"
+    ending = "\n" if lines[hits[0]].endswith("\n") else ""
+    # ASCII only: this line goes down a serial link to Marlin. Prose punctuation that
+    # is fine everywhere else in this repo has no business in a G-code file.
+    lines[hits[0]] = f"M420 S1 ; use stored bed mesh ({when}), G29 skipped{ending}"
+
+    # Written beside the target and moved into place: a half-rewritten G-code file
+    # must never be something a human can upload.
+    scratch = gcode_path.with_suffix(gcode_path.suffix + ".tmp")
+    scratch.write_text("".join(lines), encoding="utf-8")
+    os.replace(scratch, gcode_path)
+
+    return "stored", (
+        f"loading the bed mesh stored {when} instead of probing, which saves the "
+        f"probe time at the start of the print."
+    )
 
 
 def _parse_duration(text: str) -> int:
@@ -261,10 +335,16 @@ def slice_stl(
             f"{detail}"
         )
 
+    # Before the metadata is read, so the numbers reported at Gate 2 describe the file
+    # that will actually be uploaded.
+    levelling, levelling_detail = _apply_stored_mesh(gcode_path)
+
     metadata = _parse_gcode(gcode_path)
     return SliceResult(
         stl_path=stl_path,
         gcode_path=gcode_path,
         profile=profile_path,
+        levelling=levelling,
+        levelling_detail=levelling_detail,
         **metadata,  # type: ignore[arg-type]
     )

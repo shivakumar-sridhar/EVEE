@@ -236,18 +236,63 @@ def printer_upload_timeout() -> float:
     return float(load_defaults()["printer"]["upload_timeout_seconds"])
 
 
-def bed_violations(size: tuple[float, float, float]) -> list[str]:
+def mesh_max_age_days() -> float:
+    """How old a stored bed mesh may be before prints go back to probing."""
+    return float(load_defaults()["bed_mesh"]["max_age_days"])
+
+
+def mesh_probe_settings() -> tuple[float, float, float]:
+    """``(ack_temp, timeout, poll)`` for confirming a bed probe actually finished."""
+    table = load_defaults()["bed_mesh"]
+    return (
+        float(table["probe_ack_temp"]),
+        float(table["probe_timeout_seconds"]),
+        float(table["probe_poll_seconds"]),
+    )
+
+
+def park_settings() -> tuple[float, float]:
+    """``(timeout, poll)`` seconds for waiting out a cancel before parking."""
+    table = load_defaults()["printer"]
+    return float(table["park_timeout_seconds"]), float(table["park_poll_seconds"])
+
+
+def plate_margin() -> float:
+    """Millimetres of bed to keep free around a multi-part plate.
+
+    The raw bounding box is not the whole footprint: the profile draws a skirt loop
+    around the objects and primes the nozzle down the left edge of the bed. A plate
+    sized to the exact bed limit passes a bounding-box check and then collides with
+    one of those.
+    """
+    return float(load_defaults()["slicing"]["plate_margin_mm"])
+
+
+def bed_violations(
+    size: tuple[float, float, float], margin: float = 0.0
+) -> list[str]:
     """Reasons a part with this bounding box will not print, or an empty list.
 
     Each message names the axis, the size, the limit and the overshoot, because
     these reach a client model as its only chance to correct the parameters.
+
+    Args:
+        margin: Millimetres to hold back from the bed on X and Y, for things that
+            sit outside the object's own footprint — a skirt, the prime lines. Not
+            applied to Z, where nothing is drawn beside the part.
     """
     limits = bed_extents()
     reasons = []
     for axis, extent, limit in zip("XYZ", size, limits):
-        if extent > limit:
+        usable = limit - margin if axis in "XY" else limit
+        if extent > usable:
+            room = (
+                f"the printer's limit is {limit:g}mm"
+                if usable == limit
+                else f"the usable limit is {usable:g}mm "
+                f"({limit:g}mm bed less {margin:g}mm for the skirt and prime line)"
+            )
             reasons.append(
-                f"{axis} is {extent:g}mm but the printer's limit is {limit:g}mm "
-                f"(over by {extent - limit:g}mm)"
+                f"{axis} is {extent:g}mm but {room} (over by {extent - usable:g}mm)"
             )
     return reasons

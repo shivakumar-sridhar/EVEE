@@ -184,8 +184,14 @@ auto-levelling, higher stock accelerations, and start G-code that is not interch
 profile — Cura's settings inheritance lives in its GUI, not its engine. PrusaSlicer was
 chosen for automation because its CLI is stable and its config is a single flat `.ini`,
 matching how this repo already treats the profile. The Cura start G-code is the
-reference to port from; `M420 S1` (use saved mesh levelling) is the load-bearing line a
-stock Ender-3 profile will not have.
+reference to port from.
+
+> **Corrected 2026-08-12.** This paragraph used to call `M420 S1` (use saved mesh
+> levelling) "the load-bearing line a stock Ender-3 profile will not have". It is not in
+> the verified profile and never was — `config/ender3_v3se.ini` probes fresh with `G29`
+> on every print, which is what the physically verified print did. `M420 S1` is now
+> injected into the *exported G-code* by `slicer.py`, and only when `calibrate_bed` has
+> actually stored a mesh. See CLAUDE.md § Bed levelling.
 
 ---
 

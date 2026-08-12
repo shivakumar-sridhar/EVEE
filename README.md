@@ -27,8 +27,9 @@ use it.
   asserting they did, and the check is `is not True` — a truthy value will not pass.
 - **Three mandatory approval gates**: after design, after slicing, and before the print
   starts. No tool spans design, slicing and printing, so a model cannot skip one of
-  those by picking a shorter call. There is no `cancel_print` tool either: ending an
-  eight-hour print is not a decision to hand a model.
+  those by picking a shorter call. `cancel_print` exists but takes its own explicit
+  `confirmed` flag, checked the same way — ending an eight-hour print is not something
+  a model should be able to do by misreading "how's it going?".
 - **`start_print` verifies which file it is starting.** OctoPrint's start command takes
   no filename — it runs whatever is currently selected, possibly something a human
   picked in the web UI hours ago. The client selects the file it was asked for and reads
@@ -148,15 +149,21 @@ directory picks it up. Verify with `/mcp`.
 
 Nothing Claude-specific is required. `python -m vtp.server` speaks MCP on its own.
 
-Six tools, one per step, with a human decision between each:
+Seven tools, with a human decision between each step:
 
 | Tool | Does | Gate after |
 |---|---|---|
 | `list_templates()` | returns each template's JSON Schema | — |
-| `design_part(template, params)` | builds STLs, opens them on the bed in PrusaSlicer | **1** — is the shape right? |
+| `design_part(template, params)` | builds STLs plus a combined plate, opens them on the bed in PrusaSlicer | **1** — is the shape right? |
 | `slice_part(stl_path)` | slices with the verified profile; reports layers, grams, time | **2** — is the cost acceptable? |
-| `get_printer_status()` | state, temperatures, current job | **3** — is the build plate clear? |
+| `get_printer_status()` | state, temperatures, current job, stored bed mesh | **3** — is the build plate clear? |
 | `start_print(gcode_path, bed_confirmed_clear)` | uploads it to the printer and starts it | — |
+| `cancel_print(confirmed)` | stops the running job and parks the head so the plate can be cleaned | — |
+| `calibrate_bed(bed_confirmed_clear)` | probes the bed once and stores the mesh, so later prints skip the probe | — |
+
+`design_part` writes one STL per part *and* a `_plate.stl` holding them side by side in
+exactly the arrangement the viewer shows. Slicing the plate prints every part in one
+job — one warm-up, one bed check — and slicing a single part is the reprint path.
 
 There is no free-text `description` parameter — your client's model picks the template
 and fills the schema, and the server validates it. `slice_part` takes no profile

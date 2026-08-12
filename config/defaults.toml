@@ -45,7 +45,7 @@ stl_angular_tolerance = 0.1   # radians
 #
 #   --load {profile}   apply the verified profile to the GUI session, so the
 #                      export button in the UI cannot reach for a stock profile
-#                      that lacks M420 S1.
+#                      that lacks this machine's start sequence.
 #
 # --single-instance was here and has been REMOVED. It forwarded each new design
 # into the existing window's scene and never cleared it, so four objects from two
@@ -87,6 +87,15 @@ gcode_auto_open = false
 profile = "config/ender3_v3se.ini"
 timeout_seconds = 600
 
+# Bed to keep free around a multi-part plate, in mm. The bounding box of the parts is
+# not the whole footprint: the profile draws one skirt loop at skirt_distance = 3, and
+# start_gcode primes the nozzle down the left edge at X2.0-2.3. A plate sized to the
+# exact 220mm limit passes a bounding-box check and then hits one of those.
+#
+# Only applied to the plate and only on X and Y. A single part is checked against the
+# raw limit, as it always was.
+plate_margin_mm = 6.0
+
 [printer]
 # OctoPrint on the Pi. The URL and the API key are NOT here: this file is committed
 # and the key is a secret. Both live in .env at the repo root — see .env.example.
@@ -103,3 +112,42 @@ timeout_seconds = 10
 # Uploads are a different shape of request: the Phase 2 G-code is ~320 KB going to
 # a Pi over wifi, and the Pi writes it to an SD card before replying.
 upload_timeout_seconds = 120
+
+# After a cancel, the head is parked so the plate can be reached and cleaned. That
+# cannot happen while the job is still winding down: OctoPrint reports "Cancelling"
+# for a while and rejects commands until it is done. So we poll until the machine is
+# genuinely idle, then send the park.
+#
+# The timeout is generous because the alternative to waiting is a nozzle left sitting
+# on the part. If it expires the cancel still stood — the park is reported as skipped,
+# never raised, because the cancel is the thing the human asked for.
+park_timeout_seconds = 90
+park_poll_seconds = 2
+
+[bed_mesh]
+# The printer probes the whole bed at the start of every print (G29 in the profile's
+# start_gcode), which costs minutes. calibrate_bed runs that probe once and stores the
+# mesh with M500; slicer.py then swaps G29 for M420 S1 on later slices.
+#
+# The profile is NOT edited to do this — G29 stays in it, and stays correct. The swap
+# happens after the export and only when a mesh has demonstrably been stored, because
+# M420 S1 against a mesh Marlin does not have prints on a flat plane and says so only
+# on the serial console.
+#
+# How old a stored mesh may be before prints go back to probing. Nothing here can read
+# the mesh back out of the printer, so age is the only staleness signal there is. Lower
+# it if the machine gets moved around.
+max_age_days = 30
+
+# Confirming the probe finished. OctoPrint answers 204 the moment it queues G28/G29/M500
+# and exposes no "the probe is done" flag, so calibrate_bed appends M104 S{probe_ack_temp}
+# and waits for the nozzle TARGET to read back that value. OctoPrint learns the target
+# from the printer's own temperature report, so it cannot appear until Marlin has
+# executed that line — which means G29 finished. A failed probe never reaches it, the
+# wait times out, and no mesh is recorded.
+#
+# Keep the ack temperature below any extrusion temperature: it exists to be observed,
+# not to melt anything. It is set back to 0 as soon as it is seen.
+probe_ack_temp = 42
+probe_timeout_seconds = 300
+probe_poll_seconds = 3

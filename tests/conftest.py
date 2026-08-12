@@ -78,6 +78,23 @@ def isolated_audit_log(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_mesh_state(tmp_path_factory, monkeypatch):
+    """Keep test runs from claiming the real printer has a stored bed mesh.
+
+    Not hygiene, safety. ``slice_stl`` reads this file to decide whether to swap the
+    profile's ``G29`` for ``M420 S1``. A test that records a mesh would leave
+    ``output/bed_mesh.json`` behind, and the next *real* slice would emit "load the
+    stored mesh" for a mesh the printer never stored — which Marlin does not refuse.
+    It prints on a flat plane.
+
+    Returns the scratch path so a test can seed or inspect it.
+    """
+    path = tmp_path_factory.mktemp("mesh") / "bed_mesh.json"
+    monkeypatch.setattr("vtp.calibration.MESH_STATE", path)
+    return path
+
+
+@pytest.fixture(autouse=True)
 def no_post_command_sleep(monkeypatch):
     """Drop the settle delay after start/cancel. It exists for the human, not us."""
     monkeypatch.setattr("vtp.printer.time.sleep", lambda _seconds: None)

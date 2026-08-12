@@ -1646,6 +1646,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "build123d" },
+    { name = "httpx2" },
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "numpy" },
@@ -1661,6 +1662,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "build123d", specifier = ">=0.9" },
+    { name = "httpx2", specifier = ">=2.0" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "mcp", specifier = ">=2.0" },
     { name = "numpy", specifier = ">=1.26" },

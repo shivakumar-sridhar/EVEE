@@ -47,8 +47,16 @@ descriptions. If you ever find one holding only because of this file, that is th
 - Always report resolved inner dimensions alongside outer
 
 ## Slicing
-- Only use `config/ender3_v3se.ini`. It is hand-tuned and physically verified. Do not generate slicer configs.
+- Only use `config/ender3_v3se.ini`. It is hand-tuned. Do not generate slicer configs.
+  Its `start_gcode` was edited 2026-08-12 to fix the first-layer ooze, so it is not
+  currently *physically* verified — see § The machine.
 - `slice_part` exposes **no profile parameter** — that is the enforcement, not this bullet.
+  It exposes no levelling parameter either: whether the stored mesh is used is *state*,
+  decided by `calibration.mesh_state()`, never a knob a client can turn.
+- The normal input is the plate. Its arrangement comes from `cad.arrange_along_x`, the
+  same function the review 3MF uses. **Never** hand the parts to PrusaSlicer as separate
+  STLs with `--merge`: it would arrange them itself and the preview-equals-print
+  guarantee would die with nothing failing to say so.
 
 ## Testing
 - Never test by starting a real print. Use `slice_part` output metadata for verification.
@@ -66,6 +74,25 @@ descriptions. If you ever find one holding only because of this file, that is th
 
 ## Current state (Phases 0–3 and 5 done; Phase 6 next)
 
+### The 2026-08-12 fixes, from the first real print
+
+The first print through `start_print` ran and was cancelled. Four problems came out of
+it; all four are fixed. Seven MCP tools now, not five.
+
+1. **One plate, not one part per job.** `cad.arrange_along_x` is shared by the review
+   3MF and the new `<stem>_plate.stl`, and that sharing is the guarantee that what Gate
+   1 shows is what prints. Slicing the plate is the normal path; a single part is the
+   reprint path. Verified: plate is 75 layers, the same as the tallest part alone, not
+   the sum — `;LAYER_CHANGE` counting stays correct because `complete_objects = 0`.
+2. **The bed probe is optional** — see § Bed levelling below.
+3. **`cancel_print` is a tool, and parks the head** — see § Printer control.
+4. **The first-layer ooze fix** — see § The machine.
+
+Not done, and deliberately: completion tracking. `_audit` still records only starts and
+cancels, so "the last print failed" is inferred from a `cancel_print` entry being the
+newest event. That is a proxy, said out loud in `calibration.py`, and the recommendation
+stays quiet on ambiguity rather than nagging. Real completion tracking is Phase 6.
+
 `BUILD_PLAN.md` is the spec. Work through its phases in order, **one phase per session**,
 and within a phase **one feature at a time on the user's call** — do not run ahead.
 
@@ -79,7 +106,8 @@ Done:
 - **Phase 0 — complete.** OctoPrint 1.11.8 verified at the URL in `.env`, Ender on
   `/dev/ttyUSB0` @ 115200. PrusaSlicer 2.9.4 installed; `config/ender3_v3se.ini` is
   hand-tuned, exported, and **physically verified** — it sliced the case body (55 layers,
-  4.25 g, 30m44s) and the print completed.
+  4.25 g, 30m44s) and the print completed. That verification covered the profile *as it
+  stood then*; the 2026-08-12 `start_gcode` ooze fix has not been through a print yet.
 - **Phase 5, design half — `src/vtp/server.py`.** MCP stdio server exposing
   `list_templates` and `design_part`. Registered in `.mcp.json`. Verified end to end
   against a real MCP client over a subprocess.
@@ -198,8 +226,34 @@ Not started:
 - **`output/print_log.jsonl` records every start and cancel** before the command goes
   out. Best-effort — an unwritable log never blocks an approved print — and refusals are
   not recorded, because the log is what was started, not what was asked for.
-- **`cancel_print()` exists in the client but is not an MCP tool.** Cancelling is safe
-  physically and expensive economically; a human at the machine has a button.
+- **`cancel_print` became an MCP tool on 2026-08-12**, reversing the rule that used to
+  sit here ("exists in the client but is not an MCP tool; a human at the machine has a
+  button"). The objection stands — a model must not end a long print on a misread
+  sentence — so the answer is a `confirmed` flag checked with `is not True`, keyword-only
+  in the client, exactly like `bed_confirmed_clear`. What made it worth having is that
+  the machine's own button does not park the head: a bare cancel leaves a hot nozzle
+  over the ruined part with the plate unreachable.
+- **Parking is the only G-code this package emits**, and it is `printer._park_commands()`,
+  a module constant. No public method takes a command string and none should — a freeform
+  G-code path would end the property that this server only does what it documents.
+  `test_no_public_method_accepts_a_gcode_command` enforces it by introspection, because
+  a comment is not a mechanism.
+- **The park has to wait for real idle.** `PrinterStatus.printing` folds in OctoPrint's
+  `cancelling` and `finishing` flags, which is exactly the state a fresh cancel leaves
+  and exactly when OctoPrint rejects commands. `_wait_until_idle` polls a **fixed attempt
+  count**, not a wall-clock deadline — `conftest` patches `time.sleep` to a no-op, so a
+  deadline loop would spin thousands of mock requests instead of iterating twice.
+- **A park failure is reported, never raised.** By then the print is already stopped,
+  which is what was asked for.
+- **`store_bed_mesh` confirms with a temperature sentinel.** OctoPrint answers 204 the
+  moment it queues `G28`/`G29`/`M500` and exposes no "probe finished" flag, so a fourth
+  command `M104 S42` is appended and the nozzle *target* is polled until it reads back.
+  OctoPrint learns that target from the printer's own report, so it cannot appear until
+  Marlin has executed past `G29`. A failed probe never reaches it, the wait times out,
+  and **no mesh is recorded** — the fail-safe holds by construction rather than by care.
+- **G-code we write must be ASCII.** It goes down a serial link. An em-dash in the
+  `M420 S1` comment is what caught this; prose punctuation is fine everywhere else in
+  this repo and has no business in a `.gcode` file.
 - **`start_print` uploads as well as starts — owner's decision, 2026-08-12.** There was
   briefly a separate `upload_gcode` MCP tool with Gate 3 sitting between the two. The
   owner asked for one call; the cost was stated and accepted. This also restores
@@ -243,6 +297,51 @@ levelling` in `start_gcode`, probing the CR Touch fresh on every print. That is 
 physically verified print did. `M420 S1` is the alternative — faster, but it depends on
 a mesh having been stored with `G29` + `M500` beforehand. Do not "fix" the profile by
 adding it; the levelling is already handled.
+
+**Stored meshes — added 2026-08-12, reversing the paragraph above in part.** The owner
+asked for the per-print probe to be optional. `M420 S1` is now used, but **still not in
+the profile**. The profile keeps `G29`, which is always correct and is also the
+substitution anchor. The swap happens in `slicer._apply_stored_mesh`, on the exported
+G-code, rewriting exactly one line — verified by diff: 1 line of 24,810 changes and the
+metadata is identical.
+
+- `calibrate_bed` runs `G28`/`G29`/`M500` once. Only then does a mesh exist.
+- Every uncertain case falls back to probing: no state file, an unreadable one, one
+  older than `[bed_mesh] max_age_days`, or an anchor that is missing or doubled.
+- **This direction is the whole design.** `M420 S1` against a mesh Marlin does not have
+  does not fail — it prints on a flat plane and says so only on the serial console.
+  Slower and correct beats faster and silently wrong.
+- **`output/bed_mesh.json` is a claim, not a reading.** OctoPrint cannot read a mesh
+  back out of the printer, so nothing can verify one still exists. A firmware update or
+  an `M502` invalidates it while the file still says "stored yesterday". That residual
+  risk is real; the age limit and the `get_printer_status` prompt are the mitigations.
+- `tests/conftest.py` isolates `vtp.calibration.MESH_STATE` for the same reason it
+  isolates the audit log, but with a physical consequence: a test that left a state file
+  behind would make the next *real* slice emit `M420 S1` for a mesh that was never
+  stored.
+
+**The nozzle waits near the plate — fixed 2026-08-12.** `start_gcode` used to run
+`G1 Z50 F240` after `G29`, park over the start of the prime line, and only *then* ramp
+150 → 210C and wait out both `M190` and `M109`. Everything that oozed during that wait
+fell 50mm onto the exact spot the prime line begins, and the prime line dragged the blob
+into the part. First layers were visibly bad while the G-code metadata — layers, grams,
+time — looked completely normal, which is why this survived a physically verified print.
+
+The lift is now `G1 Z2.0 F240`, so the wait happens 2mm off the plate and ooze is pinned
+where the prime line will wipe it. That is what Cura did, and why the same geometry
+printed cleanly there. Two moves were also appended after the prime lines — a `Z2.0`
+lift and a travel to `X10 Y10` — so nothing left on the prime lane is dragged into the
+first layer.
+
+Re-slicing the case body across the change: 70 layers and 5.23 g / 1754.53 mm both
+identical, time 38m10s → 37m46s. The 24s is the `Z50` round-trip at F240 that no longer
+happens; no extrusion changed. **`tests/test_profile.py` guards all of it**, including
+that `Z50` never comes back.
+
+**The profile's "physically verified" status has lapsed** as of this edit and stays
+lapsed until a real print runs with it and is watched through the first layer. The
+geometry, the bed size and every extrusion setting are untouched, so the risk is narrow
+— but "verified" means a human watched it, and nobody has watched this one yet.
 
 ### The architecture change (supersedes BUILD_PLAN Phase 4)
 

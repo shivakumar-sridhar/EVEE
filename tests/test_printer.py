@@ -17,7 +17,7 @@ import json
 import httpx2
 import pytest
 
-from vtp.config import _dotenv
+from vtp.config import _dotenv, bed_extents
 from vtp.printer import (
     JobStatus,
     OctoPrintClient,
@@ -25,6 +25,7 @@ from vtp.printer import (
     PrinterStatus,
     PrinterUnreachable,
     PrintRefused,
+    _park_commands,
 )
 
 BASE = "http://printer.invalid"
@@ -576,23 +577,126 @@ def test_audit_failure_does_not_stop_a_print(monkeypatch, tmp_path):
 # --- cancel -----------------------------------------------------------------
 
 
+def _cancel_routes(states=None, park=(204, None)):
+    """Routes for a cancel, with the status sequence the park loop will see.
+
+    ``states`` is consumed one entry per ``GET /api/printer``; the last one repeats,
+    which is what lets a test say "printing forever" without listing it a hundred times.
+    """
+    states = list(states or [PRINTING, OPERATIONAL])
+    seen = {"n": 0}
+
+    def status(_request):
+        index = min(seen["n"], len(states) - 1)
+        seen["n"] += 1
+        return (200, states[index])
+
+    return {
+        "GET /api/printer": status,
+        "POST /api/job": (204, None),
+        "GET /api/job": (200, job_payload("part.gcode", "Cancelling")),
+        "POST /api/printer/command": park,
+    }
+
+
 def test_cancel_when_idle_is_an_error():
     printer, recorder = client({"GET /api/printer": (200, OPERATIONAL)})
     with pytest.raises(PrinterError, match="nothing to cancel"):
-        printer.cancel_print()
+        printer.cancel_print(confirmed=True)
     assert not recorder.sent("POST", "/api/job")
 
 
 def test_cancel_while_printing():
-    printer, recorder = client(
-        {
-            "GET /api/printer": (200, PRINTING),
-            "POST /api/job": (204, None),
-            "GET /api/job": (200, job_payload("part.gcode", "Cancelling")),
-        }
-    )
-    printer.cancel_print()
+    printer, recorder = client(_cancel_routes())
+    result = printer.cancel_print(confirmed=True)
     assert recorder.body_for("POST", "/api/job") == {"command": "cancel"}
+    assert result.parked is True
+
+
+@pytest.mark.parametrize("value", ["yes", 1, "true", [1], object()])
+def test_cancel_rejects_anything_but_true(value):
+    """A truthy value is evidence something was passed, not that a human decided."""
+    printer, recorder = client({})
+    with pytest.raises(PrintRefused, match="not True"):
+        printer.cancel_print(confirmed=value)
+    assert recorder.calls == []
+
+
+def test_cancel_confirmation_is_keyword_only():
+    """So it cannot arrive by argument position from a refactor."""
+    printer, _ = client({})
+    with pytest.raises(TypeError):
+        printer.cancel_print(True)
+
+
+def test_cancel_parks_the_head_after_the_cancel():
+    """The point of the tool over the machine's own button: a reachable plate."""
+    printer, recorder = client(_cancel_routes())
+    printer.cancel_print(confirmed=True)
+
+    assert recorder.body_for("POST", "/api/printer/command") == {
+        "commands": list(_park_commands())
+    }
+    assert recorder.paths.index("/api/job") < recorder.paths.index(
+        "/api/printer/command"
+    ), "the park must not go out before the cancel"
+
+
+def test_the_park_position_is_read_from_the_profile():
+    """Never a literal 187: the bed is stated in the profile and read from it."""
+    commands = _park_commands()
+    expected = f"Y{bed_extents()[1] * 0.85:g}"
+    assert any(expected in line for line in commands)
+    assert "M84 X Y E" in commands, "releasing Z would drop the gantry"
+
+
+def test_a_printer_that_never_goes_idle_is_reported_not_raised():
+    """OctoPrint refuses commands while cancelling. Waiting forever is not an option.
+
+    The cancel already succeeded by this point, so this must not read as a failure —
+    it has to say the print is stopped and the head is not parked.
+    """
+    printer, recorder = client(_cancel_routes(states=[PRINTING]))
+    result = printer.cancel_print(confirmed=True)
+
+    assert result.parked is False
+    assert "still" in result.park_detail
+    assert not recorder.sent("POST", "/api/printer/command")
+
+
+def test_a_refused_park_still_returns_a_successful_cancel():
+    printer, _ = client(_cancel_routes(park=(409, None)))
+    result = printer.cancel_print(confirmed=True)
+    assert result.parked is False
+    assert "refused" in result.park_detail
+
+
+def test_cancel_is_recorded_with_the_file_it_stopped(isolated_audit_log):
+    printer, _ = client(_cancel_routes())
+    printer.cancel_print(confirmed=True)
+
+    events = [
+        json.loads(line) for line in isolated_audit_log.read_text().splitlines()
+    ]
+    cancel = next(e for e in events if e["event"] == "cancel_print")
+    assert cancel["confirmed"] is True
+    assert cancel["file"] == "part.gcode"
+
+
+def test_no_public_method_accepts_a_gcode_command():
+    """The Python enforcement of "narrow, not a passthrough".
+
+    The park is a module constant precisely so a client model cannot reach the
+    machine directly. A comment saying so is not a mechanism; this is.
+    """
+    import inspect
+
+    forbidden = {"gcode", "command", "commands", "script", "lines"}
+    for name, member in inspect.getmembers(OctoPrintClient, inspect.isfunction):
+        if name.startswith("_"):
+            continue
+        params = set(inspect.signature(member).parameters)
+        assert not (params & forbidden), f"{name} exposes a command parameter"
 
 
 # --- upload_and_print: the combined path ------------------------------------
@@ -733,3 +837,85 @@ def test_combined_start_is_audited(tmp_path, isolated_audit_log):
     record = json.loads(isolated_audit_log.read_text(encoding="utf-8").splitlines()[0])
     assert record["event"] == "start_print"
     assert record["file"] == "part.gcode"
+
+
+# --- storing a bed mesh -----------------------------------------------------
+#
+# The interesting property is the acknowledgement. OctoPrint answers 204 the moment
+# it queues the commands and has no "the probe finished" flag, so a mesh recorded
+# without confirmation would be a claim every later slice trusts.
+
+
+def _mesh_routes(targets):
+    """Routes for a probe, with the nozzle targets the ack loop will read back."""
+    seq = list(targets)
+    seen = {"n": 0}
+
+    def status(_request):
+        index = min(seen["n"], len(seq) - 1)
+        seen["n"] += 1
+        payload = json.loads(json.dumps(OPERATIONAL))
+        payload["temperature"]["tool0"]["target"] = seq[index]
+        return (200, payload)
+
+    return {"GET /api/printer": status, "POST /api/printer/command": (204, None)}
+
+
+def test_storing_a_mesh_refuses_without_a_bed_confirmation():
+    printer, recorder = client({})
+    with pytest.raises(PrintRefused, match="not True"):
+        printer.store_bed_mesh(bed_confirmed_clear="yes")
+    assert recorder.calls == []
+
+
+def test_storing_a_mesh_refuses_while_printing():
+    printer, recorder = client({"GET /api/printer": (200, PRINTING)})
+    with pytest.raises(PrintRefused, match="already running"):
+        printer.store_bed_mesh(bed_confirmed_clear=True)
+    assert not recorder.sent("POST", "/api/printer/command")
+
+
+def test_a_confirmed_probe_is_recorded(isolated_mesh_state):
+    """The sentinel: the target only appears once Marlin is past G29."""
+    from vtp.calibration import mesh_state
+
+    printer, recorder = client(_mesh_routes([0.0, 0.0, 42.0]))
+    result = printer.store_bed_mesh(bed_confirmed_clear=True)
+
+    assert result.stored is True
+    assert recorder.body_for("POST", "/api/printer/command") == {
+        "commands": ["G28", "G29", "M500", "M104 S42"]
+    }
+    assert isolated_mesh_state.is_file()
+    assert mesh_state().usable is True
+
+
+def test_an_unconfirmed_probe_records_nothing(isolated_mesh_state):
+    """A probe that errored never reaches the M104, so the wait must not be trusted.
+
+    This is the failure that would matter: a recorded mesh the printer does not have
+    makes every later slice emit M420 S1, which Marlin does not refuse — it prints on
+    a flat plane and mentions it only on the serial console.
+    """
+    from vtp.calibration import mesh_state
+
+    printer, _ = client(_mesh_routes([0.0]))
+    result = printer.store_bed_mesh(bed_confirmed_clear=True)
+
+    assert result.stored is False
+    assert "never acknowledged" in result.detail
+    assert not isolated_mesh_state.is_file()
+    assert mesh_state().usable is False
+
+
+def test_the_nozzle_is_cooled_whether_or_not_the_probe_confirmed():
+    """The sentinel warms the block a little. Do not walk away leaving it on."""
+    for targets in ([0.0, 42.0], [0.0]):
+        printer, recorder = client(_mesh_routes(targets))
+        printer.store_bed_mesh(bed_confirmed_clear=True)
+        sent = [
+            json.loads(body)["commands"]
+            for (method, path), body in zip(recorder.calls, recorder.bodies)
+            if (method, path) == ("POST", "/api/printer/command")
+        ]
+        assert sent[-1] == ["M104 S0"]

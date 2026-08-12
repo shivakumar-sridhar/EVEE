@@ -56,7 +56,7 @@ def call(server, name: str, **arguments):
 # --------------------------------------------------------------------------- #
 
 
-def test_exposed_tools_are_the_five_gated_steps(server):
+def test_exposed_tools_are_the_gated_steps(server):
     """The surface is a whitelist. Anything else here is a gate someone can skip."""
 
     async def go():
@@ -69,21 +69,37 @@ def test_exposed_tools_are_the_five_gated_steps(server):
         "slice_part",
         "get_printer_status",
         "start_print",
+        "cancel_print",
+        "calibrate_bed",
     }
     # upload_gcode was folded into start_print on 2026-08-12 at the owner's request.
     # If it reappears as a tool, the workflow in _INSTRUCTIONS is stale too.
     assert "upload_gcode" not in names
 
 
-def test_no_cancel_tool(server):
-    """printer.py implements cancel; exposing it lets a model end an 8-hour print."""
+def test_cancel_tool_is_guarded_by_an_explicit_confirmation(server):
+    """Cancel became a tool on 2026-08-12, having deliberately not been one.
+
+    The original objection stands — a model must not end a long print on a misread
+    sentence — so the flag is the answer to it, and these assertions are what keep
+    the answer in place. A default of any kind would give it away.
+    """
 
     async def go():
         return await server.list_tools()
 
-    names = {t.name for t in anyio.run(go)}
-    assert "cancel_print" not in names
+    tools = anyio.run(go)
+    names = {t.name for t in tools}
+    assert "cancel_print" in names
+    # Pausing is still not offered: a paused printer sits with a hot nozzle on the
+    # part, and nothing in this workflow needs it.
     assert "pause_print" not in names
+
+    schema = next(t for t in tools if t.name == "cancel_print").input_schema
+    assert set(schema["properties"]) == {"confirmed"}
+    assert schema["properties"]["confirmed"]["type"] == "boolean"
+    assert schema.get("required") == ["confirmed"]
+    assert "default" not in schema["properties"]["confirmed"]
 
 
 def test_no_tool_combines_steps(server):
@@ -100,11 +116,20 @@ def test_no_tool_combines_steps(server):
     for tool in tools:
         schema = json.dumps(tool.input_schema)
         assert "auto_print" not in schema
-        # The bed confirmation belongs to exactly one tool. On any other it would
-        # be a way to carry the confirmation forward into a step that does not
-        # deserve it.
-        if tool.name != "start_print":
+        # The bed confirmation belongs to the two tools that drive the nozzle at the
+        # plate, and nowhere else. On any other tool it would be a way to carry the
+        # confirmation forward into a step that does not deserve it.
+        #
+        # calibrate_bed reuses the name rather than inventing a second one on purpose:
+        # it is the same physical fact and the same human check, and two names would
+        # invite a model to treat one of them as the weaker one.
+        if tool.name not in {"start_print", "calibrate_bed"}:
             assert "bed_confirmed_clear" not in schema
+        # And the cancel confirmation belongs to exactly one tool too, for the same
+        # reason: it must never become a flag another step can pass along. Checked as
+        # an exact key — "confirmed" is a substring of "bed_confirmed_clear".
+        if tool.name != "cancel_print":
+            assert "confirmed" not in tool.input_schema["properties"]
 
     # Uploading must not be reachable from the slicing tool, or Gate 2 disappears.
     slice_schema = next(t for t in tools if t.name == "slice_part").input_schema
@@ -155,6 +180,26 @@ def test_design_part_returns_everything_the_review_gate_needs(server, tmp_path):
     # The render is the point of the human gate; a spec sentence confirms numbers,
     # only the image confirms shape.
     assert sum(len(v) for v in data["preview_paths"].values()) == 4
+
+
+@pytest.mark.slow
+def test_design_part_offers_a_plate_the_model_can_slice(server):
+    """The plate is what turns two prints into one, so the model has to see it."""
+    err, data = call(server, "design_part", template="box_with_lid", params=GOOD)
+    assert not err
+
+    plate = data["plate"]
+    assert plate["stl_path"].endswith("_plate.stl")
+    assert plate["parts"] == ["body", "lid"]
+    assert plate["fits_bed"] is True
+    assert plate["reason"] is None
+    # 40mm body + 8mm gap + 40mm lid, on a bed that easily takes it.
+    assert plate["size"] == {"x": 88.0, "y": 30.0, "z": 15.0}
+    # The plate is not a part: it must not leak into the per-part collections, which
+    # the review gate reads by name.
+    assert "plate" not in data["stl_paths"]
+    assert "plate" not in data["bounding_boxes"]
+    assert data["next_step"].count("plate") >= 1
 
 
 @pytest.mark.slow
@@ -453,6 +498,45 @@ class FakePrinter:
             ),
         )
 
+    mesh_stored = True
+
+    def store_bed_mesh(self, *, bed_confirmed_clear):
+        from vtp.printer import MeshResult, PrintRefused
+
+        FakePrinter.calls.append(("store_bed_mesh", bed_confirmed_clear))
+        if bed_confirmed_clear is not True:
+            raise PrintRefused(
+                f"refusing to probe: bed_confirmed_clear was {bed_confirmed_clear!r}, "
+                f"not True. Nothing was sent."
+            )
+        if FakePrinter.mesh_stored:
+            return MeshResult(stored=True, detail="the bed mesh is stored")
+        return MeshResult(
+            stored=False,
+            detail="the printer never acknowledged, so prints will keep probing",
+        )
+
+    def cancel_print(self, *, confirmed):
+        from vtp.printer import CancelResult, JobStatus, PrintRefused
+
+        FakePrinter.calls.append(("cancel_print", confirmed))
+        if confirmed is not True:
+            raise PrintRefused(
+                f"refusing to cancel: confirmed was {confirmed!r}, not True. "
+                f"Nothing was sent."
+            )
+        return CancelResult(
+            job=JobStatus(
+                state="Cancelling",
+                file_name="case.gcode",
+                completion=12.0,
+                print_time_seconds=300,
+                print_time_left_seconds=None,
+            ),
+            parked=True,
+            park_detail="lifted, moved clear, heaters off",
+        )
+
 
 @pytest.fixture
 def fake_printer(monkeypatch):
@@ -592,3 +676,132 @@ def test_start_print_uploads_and_starts(server, fake_printer, probe_gcode):
     assert FakePrinter.calls == [
         ("upload_and_print", str(probe_gcode), True)
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Cancelling
+# --------------------------------------------------------------------------- #
+
+
+def test_cancel_refusal_reaches_the_client_intact(server, fake_printer):
+    err, msg = call(server, "cancel_print", confirmed=False)
+    assert err
+    assert "confirmed was False" in msg
+    assert "Nothing was sent" in msg
+
+
+def test_cancel_does_not_default_the_confirmation(server, fake_printer):
+    """Omitting it is a schema error, not a cancelled print."""
+    err, msg = call(server, "cancel_print")
+    assert err
+    assert "confirmed" in msg
+    assert FakePrinter.calls == []
+
+
+def test_cancel_reports_the_park_and_that_the_plate_is_dirty(server, fake_printer):
+    err, payload = call(server, "cancel_print", confirmed=True)
+    assert not err
+    assert payload["cancelled"] is True
+    assert payload["parked"] is True
+    assert payload["file_name"] == "case.gcode"
+    # The next print must not inherit this conversation's bed confirmation: there is
+    # now a failed part stuck to the plate.
+    assert "not clear" in payload["next_step"]
+    assert FakePrinter.calls == [("cancel_print", True)]
+
+
+def test_cancel_description_says_it_cannot_be_undone(server):
+    """These sentences are the only thing standing between a question and a cancel."""
+
+    async def go():
+        return await server.list_tools()
+
+    text = next(t for t in anyio.run(go) if t.name == "cancel_print").description
+    assert "cannot be resumed" in text
+    assert "plain words" in text
+    assert "THIS CALL ENDS YOUR TURN" in text
+
+
+def test_start_print_description_no_longer_claims_there_is_no_cancel_tool(server):
+    """It said so for a reason; the reason changed and the text has to follow."""
+
+    async def go():
+        return await server.list_tools()
+
+    text = next(t for t in anyio.run(go) if t.name == "start_print").description
+    assert "no cancel tool" not in text
+    assert "cancel_print" in text
+
+
+def test_slice_part_reports_which_levelling_the_gcode_will_use(server, tmp_path):
+    """calibrate_bed's description promises this field exists. It has to."""
+    from vtp.cad import design
+
+    out = design("box_with_lid", GOOD, output_dir=OUTPUT_DIR, slug="_lvl", render=False)
+    try:
+        err, data = call(server, "slice_part", stl_path=str(out.plate_path))
+        assert not err
+        # Nothing stored in a test run, so it must say so rather than omit the key.
+        assert data["bed_levelling"]["mode"] == "probe"
+        assert data["bed_levelling"]["detail"]
+    finally:
+        for leftover in OUTPUT_DIR.glob("_lvl*"):
+            leftover.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# Calibrating
+# --------------------------------------------------------------------------- #
+
+
+def test_calibrate_bed_needs_the_same_confirmation_a_print_does(server, fake_printer):
+    """A probe drives the nozzle at the plate. Same physical risk, same check."""
+    err, msg = call(server, "calibrate_bed", bed_confirmed_clear=False)
+    assert err
+    assert "bed_confirmed_clear was False" in msg
+
+
+def test_calibrate_bed_does_not_default_the_confirmation(server, fake_printer):
+    err, msg = call(server, "calibrate_bed")
+    assert err
+    assert "bed_confirmed_clear" in msg
+    assert FakePrinter.calls == []
+
+
+def test_calibrate_bed_reports_an_unconfirmed_probe_as_a_safe_outcome(
+    server, fake_printer
+):
+    """Not storing a mesh is not a failure: prints keep probing, which always works."""
+    FakePrinter.mesh_stored = False
+    err, payload = call(server, "calibrate_bed", bed_confirmed_clear=True)
+    assert not err
+    assert payload["stored"] is False
+    assert "keep probing" in payload["detail"] or "probing" in payload["next_step"]
+
+
+def test_calibrate_bed_stores_and_says_so(server, fake_printer):
+    FakePrinter.mesh_stored = True
+    err, payload = call(server, "calibrate_bed", bed_confirmed_clear=True)
+    assert not err
+    assert payload["stored"] is True
+    assert FakePrinter.calls == [("store_bed_mesh", True)]
+
+
+def test_printer_status_reports_the_bed_mesh(server, fake_printer):
+    """Where the recalibration nudge belongs: the call made just before printing."""
+    err, payload = call(server, "get_printer_status")
+    assert not err
+
+    mesh = payload["bed_mesh"]
+    assert mesh["will_be_used"] is False  # conftest isolates it; nothing stored
+    assert mesh["recommend_recalibration"] is True
+    assert "calibrate_bed" in mesh["detail"]
+
+
+def test_calibrate_bed_description_says_it_moves_the_machine(server):
+    async def go():
+        return await server.list_tools()
+
+    text = next(t for t in anyio.run(go) if t.name == "calibrate_bed").description
+    assert "Nothing is printed" in text
+    assert "THIS CALL ENDS YOUR TURN" in text

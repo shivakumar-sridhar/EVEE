@@ -7,7 +7,8 @@ import trimesh
 from build123d import Compound, Mesher
 from pydantic import ValidationError
 
-from vtp.cad import REVIEW_GAP, design, render_preview
+from vtp.cad import PART_GAP, arrange_along_x, design, render_preview
+from vtp.config import bed_violations
 from vtp.templates import TEMPLATE_REGISTRY, UnknownTemplateError, get_template
 
 ACCEPTANCE = dict(outer_l=50.0, outer_w=40.0, outer_h=20.0)
@@ -181,23 +182,127 @@ def test_the_review_model_spaces_the_parts_out(result):
     body_x, body_y, _ = result.bounding_boxes["body"]
     lid_x, _, _ = result.bounding_boxes["lid"]
 
-    assert scene.size.X == pytest.approx(body_x + lid_x + REVIEW_GAP, abs=0.05)
+    assert scene.size.X == pytest.approx(body_x + lid_x + PART_GAP, abs=0.05)
     assert scene.size.Y == pytest.approx(body_y, abs=0.05)
 
     # And they really are apart, not merely spanning a wide box together.
     centres = sorted(shape.bounding_box().center().X for shape in shapes)
-    assert centres[1] - centres[0] > REVIEW_GAP
+    assert centres[1] - centres[0] > PART_GAP
 
 
 @pytest.mark.slow
 def test_the_parts_themselves_stay_centred_for_slicing(result):
-    """Spacing is a property of the review, never of what gets printed."""
+    """Spacing is a property of the arrangement, never of the single-part STLs.
+
+    Doing double duty since the plate arrived: neither the review model nor
+    ``export_plate`` may move the per-part STLs, which are what a single-part
+    reprint slices.
+    """
     for name, path in result.stl_paths.items():
         mesh = trimesh.load_mesh(path)
         lo, hi = mesh.bounds
         assert (lo[0] + hi[0]) / 2 == pytest.approx(0.0, abs=0.01), f"{name} moved in X"
         assert (lo[1] + hi[1]) / 2 == pytest.approx(0.0, abs=0.01), f"{name} moved in Y"
         assert lo[2] == pytest.approx(0.0, abs=0.01), f"{name} is off the bed"
+
+
+# --------------------------------------------------------------------------- #
+# arrange_along_x() and the printed plate
+# --------------------------------------------------------------------------- #
+
+
+def test_arrange_centres_the_row_on_the_origin():
+    from build123d import Box
+
+    parts = [Box(10, 4, 2), Box(20, 4, 2)]
+    placed = arrange_along_x(parts)
+    centres = [p.bounding_box().center().X for p in placed]
+
+    assert centres[1] - centres[0] == pytest.approx(15 + PART_GAP)
+    span = Compound(children=placed).bounding_box()
+    assert span.center().X == pytest.approx(0.0, abs=1e-9)
+    assert span.size.X == pytest.approx(30 + PART_GAP)
+
+
+def test_arrange_leaves_y_and_z_alone():
+    """Print pose is the part's own. Only X may change."""
+    from build123d import Box
+
+    part = Box(10, 4, 2)
+    before = part.bounding_box()
+    after = arrange_along_x([part])[0].bounding_box()
+
+    assert after.center().X == pytest.approx(before.center().X)
+    assert after.center().Y == pytest.approx(before.center().Y)
+    assert after.min.Z == pytest.approx(before.min.Z)
+
+
+@pytest.mark.slow
+def test_design_writes_a_plate_holding_every_part(result):
+    assert result.plate_path is not None
+    assert result.plate_path.name.endswith("_plate.stl")
+
+    mesh = trimesh.load_mesh(result.plate_path)
+    assert len(mesh.split(only_watertight=False)) == 2, "the plate lost a part"
+
+    lo, hi = mesh.bounds
+    body_x, body_y, body_z = result.bounding_boxes["body"]
+    lid_x, _, _ = result.bounding_boxes["lid"]
+
+    assert hi[0] - lo[0] == pytest.approx(body_x + lid_x + PART_GAP, abs=0.05)
+    assert hi[1] - lo[1] == pytest.approx(body_y, abs=0.05)
+    assert hi[2] - lo[2] == pytest.approx(body_z, abs=0.05)
+    assert lo[2] == pytest.approx(0.0, abs=0.01), "the plate must sit on the bed"
+
+
+@pytest.mark.slow
+def test_the_plate_keeps_all_the_material(result):
+    """Nothing merged, nothing dropped: volume is the sum of the parts."""
+    plate = trimesh.load_mesh(result.plate_path).volume
+    parts = sum(trimesh.load_mesh(p).volume for p in result.stl_paths.values())
+    assert plate == pytest.approx(parts, rel=1e-6)
+
+
+@pytest.mark.slow
+def test_the_plate_is_laid_out_exactly_as_the_review_model(result):
+    """The guarantee, asserted: what Gate 1 shows is where the parts print.
+
+    Both files come from ``arrange_along_x``. If someone later gives the plate its
+    own spacing — a wider gap "for cooling", a different order — the preview stops
+    describing the print and nothing else in the suite would notice. This is the
+    test that notices.
+    """
+    review = sorted(
+        shape.bounding_box().center().X for shape in Mesher().read(result.review_path)
+    )
+    plate = sorted(
+        float(body.bounds.mean(axis=0)[0])
+        for body in trimesh.load_mesh(result.plate_path).split(only_watertight=False)
+    )
+
+    assert len(review) == len(plate) == 2
+    for shown, printed in zip(review, plate):
+        assert printed == pytest.approx(shown, abs=0.05)
+
+
+@pytest.mark.slow
+def test_an_oversized_plate_is_reported_while_the_parts_still_fit(tmp_path):
+    """Two parts that each fit can still make a plate that does not.
+
+    The plate is refused by name here rather than deep inside PrusaSlicer, and the
+    per-part STLs remain a usable fallback — which is exactly what the message has
+    to tell the model to do.
+    """
+    out = design(
+        "box_with_lid",
+        dict(outer_l=140.0, outer_w=40.0, outer_h=20.0),
+        output_dir=tmp_path,
+        render=False,
+    )
+    assert out.plate_bed_violations, "280mm of plate should not fit a 220mm bed"
+    assert out.plate_bed_violations[0].startswith("X")
+    for size in out.bounding_boxes.values():
+        assert not bed_violations(size), "each part on its own still fits"
 
 
 # --------------------------------------------------------------------------- #

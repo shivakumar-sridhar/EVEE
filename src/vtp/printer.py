@@ -35,7 +35,9 @@ code; a key in a traceback ends up in a log, a bug report, or an agent transcrip
 from __future__ import annotations
 
 import json
+import math
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,15 +45,21 @@ from typing import Any
 
 import httpx2
 
+from vtp.calibration import record_mesh_stored
 from vtp.config import (
     OUTPUT_DIR,
+    bed_extents,
+    mesh_probe_settings,
     octoprint_settings,
+    park_settings,
     printer_timeout,
     printer_upload_timeout,
 )
 
 __all__ = [
+    "CancelResult",
     "JobStatus",
+    "MeshResult",
     "OctoPrintClient",
     "PrinterError",
     "PrinterStatus",
@@ -67,6 +75,40 @@ _GCODE_SUFFIXES = (".gcode", ".gco", ".g")
 #: record is not auditable after the fact, and "which file did it actually run" is
 #: the first question asked when a print goes wrong.
 AUDIT_LOG = OUTPUT_DIR / "print_log.jsonl"
+
+
+#: Home, probe the whole bed, save the mesh to EEPROM. A constant for the same reason
+#: :func:`_park_commands` is one — see its docstring.
+_MESH_COMMANDS = ("G28", "G29", "M500")
+
+
+def _park_commands() -> tuple[str, ...]:
+    """The only G-code this package ever puts on the wire.
+
+    A cancelled print leaves the nozzle sitting over the ruined part, hot, with the
+    plate unreachable. This lifts it, brings the bed forward, kills the heaters and
+    releases the motors, so a human can walk up and clean the plate.
+
+    **This is a function returning a constant, not a parameter.** No public method on
+    :class:`OctoPrintClient` accepts a command, and there is no free-text passthrough
+    to the printer anywhere in this package — the moment one exists, "the server can
+    only do the five things it documents" stops being true, and a client model gains
+    the ability to drive the machine directly. ``tests/test_printer.py`` asserts the
+    absence by introspection, because a comment is not a mechanism.
+    """
+    present_y = bed_extents()[1] * 0.85  # the spot end_gcode presents a finished print at
+    return (
+        "G91",                            # relative, so the lift works from any height
+        "G1 Z10 F600",
+        "G90",
+        f"G1 X5 Y{present_y:g} F3000",
+        "M104 S0",
+        "M140 S0",
+        "M107",
+        "M84 X Y E",                      # Z stays energised; a released Z drops the gantry
+    )
+
+
 
 
 class PrinterError(RuntimeError):
@@ -165,6 +207,39 @@ class JobStatus:
         if self.print_time_left_seconds:
             parts.append(f"about {_human_duration(self.print_time_left_seconds)} left")
         return ", ".join(parts) + "."
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    """What a cancel did, and whether the plate was left reachable.
+
+    ``parked`` is reported rather than raised on: by the time it is false the print
+    is already stopped, which is what the human asked for.
+    """
+
+    job: JobStatus
+    parked: bool
+    park_detail: str
+
+    def summary(self) -> str:
+        where = (
+            "the head is parked and the heaters are off"
+            if self.parked
+            else f"the head was NOT parked — {self.park_detail}"
+        )
+        return f"Cancelled: {self.job.file_name or 'the job'}. {where}."
+
+
+@dataclass(frozen=True)
+class MeshResult:
+    """Whether a bed probe was confirmed, and what to tell the human either way."""
+
+    stored: bool
+    detail: str
+
+    def summary(self) -> str:
+        head = "Bed mesh stored" if self.stored else "No bed mesh stored"
+        return f"{head}: {self.detail}."
 
 
 @dataclass(frozen=True)
@@ -590,21 +665,183 @@ class OctoPrintClient:
         )
         return result, job
 
-    def cancel_print(self) -> JobStatus:
-        """Stop the running job.
+    def _send_commands(self, commands: Sequence[str]) -> None:
+        """Put G-code lines on the wire. Private, and only ever called with a constant.
 
-        Not exposed as an MCP tool. Cancelling is the safe direction physically and
-        the unsafe direction economically — an eight-hour print ended by a model
-        that misread a sentence is not recoverable either — and a human at the
-        machine has a physical button. Kept here because Phase 3 specifies it and
-        Phase 6's poller may need it.
+        See :func:`_park_commands` for why this takes no caller-supplied string in
+        practice and why no public method exposes one.
         """
+        self._request(
+            "POST", "/api/printer/command", json={"commands": list(commands)}
+        )
+
+    def _wait_until_idle(self) -> tuple[bool, PrinterStatus]:
+        """Poll until the machine is genuinely idle. ``(idle, last status)``.
+
+        A fixed number of attempts rather than a wall-clock deadline, because the test
+        suite patches :func:`time.sleep` to a no-op — a deadline loop would then spin
+        thousands of requests through a mock transport instead of iterating twice.
+
+        The predicate leans on :attr:`PrinterStatus.printing` already folding in
+        OctoPrint's ``cancelling`` and ``finishing`` flags, which is exactly the state
+        a fresh cancel leaves behind and exactly the state during which OctoPrint
+        rejects commands.
+        """
+        timeout, poll = park_settings()
+        attempts = max(1, math.ceil(timeout / poll))
+
+        status = self.get_status()
+        for _ in range(attempts):
+            if status.operational and not (status.printing or status.paused):
+                return True, status
+            time.sleep(poll)
+            status = self.get_status()
+        return False, status
+
+    def cancel_print(self, *, confirmed: bool) -> CancelResult:
+        """Stop the running job and park the head so the plate can be cleaned.
+
+        Args:
+            confirmed: A human asked for this print to be stopped, in words. Checked
+                with ``is not True`` and keyword-only, for the same reasons as
+                ``bed_confirmed_clear``: a truthy value is evidence that something was
+                passed, not that a person decided to throw a print away.
+
+        Raises:
+            PrintRefused: ``confirmed`` was not exactly ``True``. Nothing is sent.
+            PrinterError: nothing is printing, so there is nothing to cancel.
+
+        Parking is best effort and never raises. By the time it runs the print is
+        already stopped — which is what was asked for — so a printer that never went
+        idle, or refused the command, is reported in the result rather than turned
+        into a failure that would imply the cancel did not happen.
+        """
+        if confirmed is not True:
+            raise PrintRefused(
+                f"refusing to cancel: confirmed was {confirmed!r}, not True. "
+                "Cancelling throws away the part on the plate and every minute "
+                "already spent printing it, and it cannot be resumed. A human has to "
+                "ask for this in plain words — it cannot be inferred from a question "
+                "about how the print is going. Nothing was sent."
+            )
+
         status = self.get_status()
         if not (status.printing or status.paused):
             raise PrinterError(
                 f"nothing to cancel: the printer is {status.state!r}, not printing."
             )
-        _audit("cancel_print", printer=self.base_url, state_before=status.state)
+
+        job = self.get_job()
+        _audit(
+            "cancel_print",
+            confirmed=True,
+            file=job.file_name,
+            printer=self.base_url,
+            state_before=status.state,
+        )
         self._request("POST", "/api/job", json={"command": "cancel"})
         time.sleep(0.5)
-        return self.get_job()
+
+        parked, detail = self._park_after_cancel()
+        _audit("park_head", parked=parked, detail=detail, printer=self.base_url)
+        return CancelResult(job=self.get_job(), parked=parked, park_detail=detail)
+
+    def store_bed_mesh(self, *, bed_confirmed_clear: bool) -> MeshResult:
+        """Probe the bed once and store the mesh, so later prints can skip the probe.
+
+        Sends ``G28``, ``G29``, ``M500`` — home, probe, save to EEPROM. Nothing is
+        printed and no filament moves, but the nozzle is driven down onto the plate at
+        every probe point, which is why the bed still has to be confirmed clear.
+
+        Args:
+            bed_confirmed_clear: Must be True, from a human who has just looked at the
+                plate. Same rule and same check as starting a print: a part still stuck
+                to the bed will be hit by the probe.
+
+        **Confirming it worked is the hard part.** ``POST /api/printer/command``
+        returns 204 the instant OctoPrint queues the lines, the probe then takes
+        minutes, and no OctoPrint state flag ever says "the probe finished" — the
+        printer stays ``Operational`` throughout. So a fourth command is appended:
+        ``M104 S<ack>``, a nozzle temperature low enough to be harmless. OctoPrint
+        learns the target from the printer's own temperature reports, so that target
+        cannot appear until Marlin has executed that line — which it only reaches
+        *after* ``G29`` returns. Seeing it is a genuine acknowledgement.
+
+        The failure direction follows for free: a probe that errors never reaches the
+        ``M104``, the wait times out, and no mesh is recorded, so slicing keeps
+        emitting the full ``G29``. Recording optimistically is the one mistake that
+        would matter, because every later print would trust it.
+        """
+        if bed_confirmed_clear is not True:
+            raise PrintRefused(
+                f"refusing to probe: bed_confirmed_clear was {bed_confirmed_clear!r}, "
+                "not True. The probe drives the nozzle down onto the plate at dozens "
+                "of points, so a part still stuck to it gets hit. A human has to look "
+                "at the plate and say it is empty. Nothing was sent."
+            )
+
+        status = self.get_status()
+        blocked = status.blocked_reason()
+        if blocked:
+            raise PrintRefused(f"refusing to probe the bed: {blocked}.")
+
+        ack, timeout, poll = mesh_probe_settings()
+        _audit(
+            "store_bed_mesh",
+            bed_confirmed_clear=True,
+            printer=self.base_url,
+            state_before=status.state,
+        )
+        self._send_commands((*_MESH_COMMANDS, f"M104 S{ack:g}"))
+
+        confirmed = self._await_probe_ack(ack, timeout, poll)
+        # Whether or not it worked, do not leave the nozzle warming.
+        try:
+            self._send_commands(("M104 S0",))
+        except PrinterError:
+            pass
+
+        if not confirmed:
+            return MeshResult(
+                stored=False,
+                detail=(
+                    f"the printer never acknowledged finishing the probe within "
+                    f"{timeout:g}s, so no mesh has been recorded and prints will keep "
+                    f"probing the bed — which is slower and always correct. Watch the "
+                    f"machine and check OctoPrint's terminal for a probe error before "
+                    f"running this again."
+                ),
+            )
+
+        record_mesh_stored(self.base_url)
+        return MeshResult(
+            stored=True,
+            detail="the bed mesh is stored; prints will load it instead of probing",
+        )
+
+    def _await_probe_ack(self, ack: float, timeout: float, poll: float) -> bool:
+        """Wait for the nozzle target to read back the sentinel. See above."""
+        attempts = max(1, math.ceil(timeout / poll))
+        for _ in range(attempts):
+            time.sleep(poll)
+            target = self.get_status().tool_target
+            if target is not None and abs(target - ack) < 0.5:
+                return True
+        return False
+
+    def _park_after_cancel(self) -> tuple[bool, str]:
+        """Wait out the cancel, then park. Returns ``(parked, why not)``."""
+        idle, status = self._wait_until_idle()
+        if not idle:
+            timeout, _ = park_settings()
+            return False, (
+                f"the printer was still {status.state!r} after {timeout:g}s, and "
+                f"OctoPrint will not take commands until a job has finished winding "
+                f"down. The print is stopped; move the head from the machine or "
+                f"OctoPrint's control tab before cleaning the plate"
+            )
+        try:
+            self._send_commands(_park_commands())
+        except PrinterError as exc:
+            return False, f"the park command was refused: {exc}"
+        return True, "lifted, moved clear, heaters off"
