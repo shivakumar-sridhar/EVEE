@@ -6,9 +6,9 @@ Describe a part in a sentence, approve the geometry, approve the slice, and it p
 The pipeline is exposed as MCP tools, so the same interface works from a voice loop or
 from an agent like Claude Code.
 
-**Status: the full path works — design, slice, print.** Five MCP tools, three human
-gates, all enforced in Python. Notification and voice are the remaining phases — see
-[Roadmap](#roadmap). [`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
+**Status: the full path works — design, slice, print, and tell you when it is done.**
+Seven MCP tools, three human gates, all enforced in Python. Voice is the one remaining
+phase — see [Roadmap](#roadmap). [`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
 
 ---
 
@@ -160,6 +160,22 @@ Seven tools, with a human decision between each step:
 | `start_print(gcode_path, bed_confirmed_clear)` | uploads it to the printer and starts it | — |
 | `cancel_print(confirmed)` | stops the running job and parks the head so the plate can be cleaned | — |
 | `calibrate_bed(bed_confirmed_clear)` | probes the bed once and stores the mesh, so later prints skip the probe | — |
+
+## Notifications
+
+`python -m vtp.notify` watches the printer and pushes to [ntfy](https://ntfy.sh) when a
+print starts, finishes, is cancelled, or the machine drops off the serial link mid-print.
+Set `NTFY_TOPIC` in `.env` and subscribe to the same topic in the ntfy app.
+
+It runs as **its own process**, deliberately — not inside the MCP server. An MCP server
+is spawned by your editor and dies with the session, so a poller living in it would only
+notify you while you were sitting in front of it, which is when you least need telling.
+`packaging/vtp-notify.service` is a ready systemd user unit.
+
+The daemon only reads. It cannot start, stop or alter a print. It is also the only thing
+that records *how a print ended* — `print_finished` and `print_failed` land in
+`output/print_log.jsonl` beside the commands, which is what lets the server suggest
+re-running `calibrate_bed` after a print that went wrong.
 
 `design_part` writes one STL per part *and* a `_plate.stl` holding them side by side in
 exactly the arrangement the viewer shows. Slicing the plate prints every part in one

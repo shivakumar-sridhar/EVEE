@@ -236,6 +236,26 @@ def printer_upload_timeout() -> float:
     return float(load_defaults()["printer"]["upload_timeout_seconds"])
 
 
+def ntfy_settings() -> tuple[str, str | None]:
+    """``(server, topic)`` for push notifications. The topic may be None.
+
+    The topic is a secret in every way that matters: on a public ntfy server, anyone
+    who knows it can both read your notifications and publish to them. So it lives in
+    ``.env`` beside the API key, not in the committed ``defaults.toml``.
+    """
+    server = env_value("NTFY_SERVER") or str(load_defaults()["notify"]["server"])
+    return server, env_value("NTFY_TOPIC")
+
+
+def notify_settings() -> tuple[float, float]:
+    """``(printing, idle)`` poll intervals in seconds for the notify daemon."""
+    table = load_defaults()["notify"]
+    return (
+        float(table["poll_seconds_printing"]),
+        float(table["poll_seconds_idle"]),
+    )
+
+
 def mesh_max_age_days() -> float:
     """How old a stored bed mesh may be before prints go back to probing."""
     return float(load_defaults()["bed_mesh"]["max_age_days"])

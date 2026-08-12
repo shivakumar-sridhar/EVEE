@@ -1,0 +1,49 @@
+# Print notifications, as a user service.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp packaging/vtp-notify.service ~/.config/systemd/user/
+#   $EDITOR ~/.config/systemd/user/vtp-notify.service     # fix WorkingDirectory
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now vtp-notify
+#   journalctl --user -u vtp-notify -f
+#
+# A *user* service, not a system one, because it reads .env from the repo and that file
+# holds your OctoPrint key. Running it as root would mean a root process reading a
+# secret out of your home directory for no benefit.
+#
+# If you want notifications while logged out:
+#   loginctl enable-linger $USER
+#
+# This only ever reads from the printer. It cannot start, stop or alter a print — see
+# the module docstring in src/vtp/notify.py.
+
+[Unit]
+Description=voice-to-print printer notifications
+# Wants=, not Requires=: the printer living on the network is not a reason to refuse to
+# start. The poller handles an unreachable printer by logging and trying again.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Absolute path — systemd does not expand ~ and starts in /.
+WorkingDirectory=%h/EVI
+ExecStart=%h/EVI/.venv/bin/python -m vtp.notify
+
+# The whole point is surviving things. A crash, a Pi reboot, a router restart: come back.
+Restart=always
+RestartSec=15
+
+# Logs to the journal. The module writes to stderr on purpose.
+StandardOutput=journal
+StandardError=journal
+
+# It needs the network, the repo and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/EVI/output
+
+[Install]
+WantedBy=default.target

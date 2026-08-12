@@ -151,3 +151,21 @@ max_age_days = 30
 probe_ack_temp = 42
 probe_timeout_seconds = 300
 probe_poll_seconds = 3
+
+[notify]
+# Phase 6. `python -m vtp.notify` watches the printer and pushes to ntfy when a print
+# starts, finishes, is cancelled, or the machine drops off mid-print.
+#
+# It runs as its OWN process, not inside the MCP server. An MCP server is spawned by
+# your editor and dies with the session, so a poller living in it would only ever
+# notify you while you were sitting in front of it — which is when you least need it.
+#
+# The topic is NOT here: it goes in .env. On a public ntfy server the topic is the only
+# thing protecting your notifications, so it is a secret and this file is committed.
+server = "https://ntfy.sh"
+
+# OctoPrint has no push channel, so this is a poll. /api/printer is cheap but not free
+# on a Pi that is also driving the serial link, so slow right down when nothing is
+# happening. Both are seconds.
+poll_seconds_printing = 5
+poll_seconds_idle = 30

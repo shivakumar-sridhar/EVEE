@@ -88,10 +88,39 @@ it; all four are fixed. Seven MCP tools now, not five.
 3. **`cancel_print` is a tool, and parks the head** — see § Printer control.
 4. **The first-layer ooze fix** — see § The machine.
 
-Not done, and deliberately: completion tracking. `_audit` still records only starts and
-cancels, so "the last print failed" is inferred from a `cancel_print` entry being the
-newest event. That is a proxy, said out loud in `calibration.py`, and the recommendation
-stays quiet on ambiguity rather than nagging. Real completion tracking is Phase 6.
+### Phase 6 — notify (`notify.py`), complete
+
+- **It is a separate process, and that is the design.** `python -m vtp.notify`, with a
+  systemd user unit in `packaging/`. A poller inside the MCP server would die with the
+  editor session — exactly when you have walked away and want telling.
+- **It only reads.** No public entry point takes anything that could move the machine.
+- **It is the first thing that records an outcome.** `print_finished` / `print_failed`
+  join the commands in `print_log.jsonl`, which upgrades `calibration`'s "last print was
+  cancelled" proxy into a real answer. Without the daemon running the log holds intent
+  only, and a lone `start_print` reads as *not* bad news on purpose — staying quiet on
+  ambiguity beats nagging on a guess.
+- **`classify()` is a pure function of (previous, status, job)**, so the whole transition
+  table is testable without a printer, a clock or a network. Two bugs were caught that
+  way before it ever ran: the "was printing, now is not" branch never checked that it
+  *is not*, so every mid-print poll fell through into the cancel path; and it read the
+  stale completion rather than the current one, so a finish at 99→100 reported as a
+  cancel.
+- **A stop below ~100% is a cancel, not a finish.** This is the only thing in the repo
+  that notices somebody pressing cancel on the machine itself. OctoPrint may report
+  completion as null at that moment — the real machine did on 2026-08-12 — so the last
+  seen figure is the fallback.
+- **The first poll adopts state without announcing it.** Otherwise restarting the daemon
+  mid-print claims a print just began, every time.
+- **An unreachable printer is not a disconnected printer.** A blinked wifi link is logged
+  and skipped; reporting a ruined print on a dropped packet teaches people to swipe these
+  away. A printer that is genuinely gone answers and says it is offline.
+- **Nothing about reporting may kill the watcher.** ntfy down, no webcam, bad topic — all
+  swallowed and logged.
+- **ntfy carries text in HTTP headers when a file is attached**, and headers are latin-1,
+  so the title and message are ASCII-folded before they go out.
+- The webcam is wired in but **aimed badly** — it frames the gantry against a bright
+  window and cannot see the plate, so a snapshot currently proves the printer exists
+  rather than that the print is fine.
 
 `BUILD_PLAN.md` is the spec. Work through its phases in order, **one phase per session**,
 and within a phase **one feature at a time on the user's call** — do not run ahead.
@@ -133,11 +162,12 @@ Done:
 - **Phase 3 — complete.** `src/vtp/printer.py`, and with it the rest of Phase 5:
   `get_printer_status` and `start_print`. Five tools, three gates.
   Verified against the live machine for every read, for a real upload, and for every
-  refusal path. **A print has never been started by `start_print`** — that is the
-  human's to do, and the testing rule below still holds.
+  refusal path. **First real print started 2026-08-12** (cancelled at ~6 min, by
+  request); the four fixes above all came out of it. The testing rule below still holds:
+  a print is started when the human says so, never to check something.
 
 Not started:
-- Phase 6 notify, Phase 7 voice.
+- Phase 7 voice.
 - Phase 4 is superseded — see below.
 
 ### Slicing and the viewer (`slicer.py`, `viewer.py`)

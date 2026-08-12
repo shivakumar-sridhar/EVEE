@@ -17,12 +17,13 @@ update, an ``M502``, or a rehomed Z can invalidate the mesh while this file stil
 it was stored yesterday. That is why the age limit exists and why the tool that writes
 this file tells the human to re-run it after touching the machine.
 
-**"The last print failed" is a proxy, not a fact.** :func:`vtp.printer._audit` records
-starts and cancels and nothing else — no completion, no failure. A print that finished
-perfectly and one that failed silently leave identical logs. So the only signal worth
-acting on is an explicit ``cancel_print`` event, and the recommendation stays quiet
-otherwise: a prompt that fires on ambiguity is a prompt people learn to ignore. Real
-completion tracking is Phase 6.
+**"The last print failed" is only as good as the daemon.** :func:`vtp.printer._audit`
+records what this process *commands* — a start, a cancel. Whether a print then finished
+or failed is observed by :mod:`vtp.notify`, which appends ``print_finished`` and
+``print_failed``. With that daemon running the question has a real answer. Without it
+the log holds intent only, a lone ``start_print`` is ambiguous between finished and
+silently failed, and this reads it as "not bad news" on purpose. Staying quiet on
+ambiguity is the point: a prompt that fires on a guess is one people learn to dismiss.
 """
 
 from __future__ import annotations
@@ -91,11 +92,31 @@ def _audit_path() -> Path:
     return printer.AUDIT_LOG
 
 
-def _last_print_was_cancelled() -> bool:
-    """True if the newest audit event is a cancel.
+#: Events that say how a print turned out, mapped to "is this bad news".
+#: ``print_finished`` / ``print_failed`` come from the :mod:`vtp.notify` daemon, the
+#: only thing that observes an *outcome*. ``start_print`` and ``cancel_print`` are
+#: written by this process when it issues a command, so they record intent. Both kinds
+#: share the log; the newest one wins.
+_OUTCOME_EVENTS = {
+    "start_print": False,
+    "cancel_print": True,
+    "print_finished": False,
+    "print_failed": True,
+}
 
-    Newest *event*, not newest cancel: a start after a cancel means the human already
+
+def _last_print_went_badly() -> bool:
+    """True if the newest outcome-bearing audit event was a bad one.
+
+    Newest *event*, not newest failure: a start after a cancel means the human already
     moved on, and nagging about a mesh at that point is noise.
+
+    How much this knows depends on whether the notify daemon was running. With it, a
+    print that failed is recorded as failed. Without it the log holds only commands, so
+    a print that finished perfectly and one that failed silently both leave a lone
+    ``start_print`` — which reads here as "not bad news", deliberately. Staying quiet on
+    ambiguity is the point: a prompt that fires on a guess is one people learn to
+    dismiss.
     """
     path = _audit_path()
     if not path.is_file():
@@ -111,16 +132,17 @@ def _last_print_was_cancelled() -> bool:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if event.get("event") in {"start_print", "cancel_print"}:
-                last = event.get("event")
+            name = event.get("event")
+            if name in _OUTCOME_EVENTS:
+                last = name
     except OSError:
         return False
-    return last == "cancel_print"
+    return _OUTCOME_EVENTS.get(last or "", False)
 
 
 def mesh_state() -> MeshState:
     """Read the stored-mesh claim and decide whether a slice may rely on it."""
-    cancelled = _last_print_was_cancelled()
+    went_badly = _last_print_went_badly()
 
     def absent(reason: str) -> MeshState:
         return MeshState(
@@ -180,12 +202,12 @@ def mesh_state() -> MeshState:
             f"a bed mesh stored {age_days:.1f} days ago will be loaded instead of "
             f"probing."
         ),
-        recommend_recalibration=cancelled,
+        recommend_recalibration=went_badly,
         recommend_reason=(
-            "the last print was cancelled. If it was cancelled because the first "
-            "layer went wrong, re-run calibrate_bed before trying again — a stored "
-            "mesh can go stale without anything reporting it."
-            if cancelled
+            "the last print did not finish. If it went wrong at the first layer, "
+            "re-run calibrate_bed before trying again — a stored mesh can go stale "
+            "without anything reporting it."
+            if went_badly
             else None
         ),
     )
