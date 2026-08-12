@@ -6,9 +6,9 @@ Describe a part in a sentence, approve the geometry, approve the slice, and it p
 The pipeline is exposed as MCP tools, so the same interface works from a voice loop or
 from an agent like Claude Code.
 
-**Status: the full path works — design, slice, print, and tell you when it is done.**
-Seven MCP tools, three human gates, all enforced in Python. Voice is the one remaining
-phase — see [Roadmap](#roadmap). [`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
+**Status: the whole pipeline works — speak, design, slice, print, and get told when it
+is done.** Seven MCP tools, three human gates, all enforced in Python.
+[`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
 
 ---
 
@@ -160,6 +160,28 @@ Seven tools, with a human decision between each step:
 | `start_print(gcode_path, bed_confirmed_clear)` | uploads it to the printer and starts it | — |
 | `cancel_print(confirmed)` | stops the running job and parks the head so the plate can be cleaned | — |
 | `calibrate_bed(bed_confirmed_clear)` | probes the bed once and stores the mesh, so later prints skip the probe | — |
+
+## Voice
+
+```bash
+uv sync --extra voice
+python -m vtp.voice          # push-to-talk; --text to type, --quiet to not be spoken to
+```
+
+Push-to-talk, not a wake word: nothing is recorded until you press a key. Speech
+recognition is faster-whisper and synthesis is Piper, both local and both on CPU —
+`base.en` transcribes a 4.6-second utterance in 0.4s, so the GPU is not needed.
+
+**A voice session cannot start, cancel, or calibrate.** Those tools are denied by
+`src/vtp/voice/gate.py` before they run, through the Agent SDK's permission callback —
+a Python refusal, not a line in a prompt. A bed confirmation has to come from a human
+who has looked at the plate, and *"sure, go ahead"* is a cheap utterance that speech
+recognition can produce from something you never said. Voice designs and slices; a
+person starts the print.
+
+It degrades rather than refusing to run: no microphone means typed input, no voice model
+means printed replies, and every reply is printed as well as spoken so a misheard
+dimension has something to check against.
 
 ## Notifications
 

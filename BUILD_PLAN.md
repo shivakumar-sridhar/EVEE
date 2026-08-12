@@ -95,6 +95,7 @@ Do not re-litigate these during implementation.
 16  ▶ GATE 3  human supplies bed_confirmed_clear=True   NON-VOICE ONLY
 17  agent → start_print()  → OctoPrint → Ender-3 V3 SE
 18  background poller → ntfy push on done/fail          [Phase 6] DONE
+19  voice frontend → agent session, machine tools denied [Phase 7] DONE
 ```
 
 ### Trust boundaries

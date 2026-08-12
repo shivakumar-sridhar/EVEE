@@ -169,3 +169,40 @@ server = "https://ntfy.sh"
 # happening. Both are seconds.
 poll_seconds_printing = 5
 poll_seconds_idle = 30
+
+[voice]
+# Phase 7. `python -m vtp.voice` — push-to-talk, not a wake word: nothing is recorded
+# until you press a key, so the microphone is not live in the room by default.
+#
+# The voice layer drives an agent session that has the MCP server attached. It CANNOT
+# start, cancel, or calibrate — src/vtp/voice/gate.py denies those outright, because a
+# bed confirmation cannot come from a microphone. That is a Python refusal, not a
+# setting, and there is deliberately nothing here to turn it off.
+
+# Speech recognition. CPU is the default because it was measured, not assumed: on a
+# 4.6s utterance base.en transcribes in 0.4s on CPU (~11x realtime) and small.en in
+# 0.9s. Using the GPU would cost >1GB of CUDA wheels (libcublas, cuDNN — not installed
+# and not pulled in by faster-whisper) to save time nobody can perceive at this length.
+#
+# Set stt_device = "auto" to use CUDA when its libraries are present; the code probes
+# and falls back to CPU with a logged reason rather than failing.
+#
+# Bigger models: small.en, medium.en, large-v3-turbo. Accuracy rises, load time rises
+# faster (base.en ~10s cold, small.en ~37s), and the model is loaded once per session.
+stt_model = "base.en"
+stt_device = "cpu"
+language = "en"
+
+# Speech synthesis (Piper). Download a voice with:
+#   python -m piper.download_voices en_US-lessac-medium --download-dir ~/.local/share/vtp-voices
+# If no voice is installed, replies are printed instead of spoken — never an error.
+voice_dir = "~/.local/share/vtp-voices"
+voice_name = "en_US-lessac-medium"
+speak_replies = true
+
+# Microphone capture. 16kHz mono is what Whisper wants; anything else gets resampled.
+# max_utterance_seconds is a stop, not a target — it bounds a stuck key or a forgotten
+# session rather than trimming normal speech.
+sample_rate = 16000
+max_utterance_seconds = 30.0
+silence_seconds = 1.5

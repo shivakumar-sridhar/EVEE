@@ -236,6 +236,33 @@ def printer_upload_timeout() -> float:
     return float(load_defaults()["printer"]["upload_timeout_seconds"])
 
 
+def stt_settings() -> tuple[str, str, str | None]:
+    """``(model, device, language)`` for speech recognition."""
+    table = load_defaults()["voice"]
+    language = str(table.get("language") or "").strip() or None
+    return str(table["stt_model"]), str(table["stt_device"]), language
+
+
+def tts_settings() -> tuple[Path, str, bool]:
+    """``(voice_dir, voice_name, speak_replies)`` for speech synthesis."""
+    table = load_defaults()["voice"]
+    return (
+        Path(str(table["voice_dir"])).expanduser(),
+        str(table["voice_name"]),
+        bool(table["speak_replies"]),
+    )
+
+
+def push_to_talk_settings() -> tuple[int, float, float]:
+    """``(sample_rate, max_seconds, silence_seconds)`` for microphone capture."""
+    table = load_defaults()["voice"]
+    return (
+        int(table["sample_rate"]),
+        float(table["max_utterance_seconds"]),
+        float(table["silence_seconds"]),
+    )
+
+
 def ntfy_settings() -> tuple[str, str | None]:
     """``(server, topic)`` for push notifications. The topic may be None.
 

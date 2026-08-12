@@ -206,3 +206,266 @@ def test_build_options_wires_the_gate_in():
     # bypassPermissions would auto-approve MCP tools and skip the callback entirely.
     assert options.permission_mode == "default"
     assert options.mcp_servers["vtp"]["args"] == ["-m", "vtp.server"]
+
+
+# --------------------------------------------------------------------------- #
+# Transcription, synthesis and the loop
+#
+# None of these touch a microphone, a speaker, or a model download. The audio
+# stack is injected or probed, because a test that needs hardware is a test that
+# does not run.
+# --------------------------------------------------------------------------- #
+
+
+from types import SimpleNamespace
+
+from vtp.voice.loop import GREETING, VoiceLoop, reply_text, should_quit
+from vtp.voice.stt import Transcriber, resolve_device
+from vtp.voice.tts import Speaker, find_voice
+
+
+def test_cpu_is_chosen_when_asked_for():
+    device, compute, reason = resolve_device("cpu")
+    assert (device, compute) == ("cpu", "int8")
+    assert "cpu" in reason
+
+
+def test_cuda_falls_back_to_cpu_rather_than_raising(monkeypatch):
+    """CTranslate2 reports a CUDA device even when its runtime libraries are absent,
+    so an unavailable GPU must degrade rather than take down the session."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_ctranslate2(name, *args, **kwargs):
+        if name == "ctranslate2":
+            raise ImportError("libcublas.so.12 is not found")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_ctranslate2)
+    device, compute, reason = resolve_device("cuda")
+
+    assert (device, compute) == ("cpu", "int8")
+    assert "cuda unavailable" in reason
+
+
+def test_a_failed_cuda_load_retries_on_cpu():
+    """The failure surfaces at model load, not at device probe."""
+    attempts = []
+
+    def factory(model, device, compute_type):
+        attempts.append(device)
+        if device == "cuda":
+            raise RuntimeError("Library libcublas.so.12 is not found")
+        return SimpleNamespace(transcribe=lambda *a, **k: ([], SimpleNamespace(duration=0)))
+
+    transcriber = Transcriber(model="base.en", device="auto", _model_factory=factory)
+    transcriber.load()
+
+    assert transcriber.device == "cpu"
+    assert "cuda load failed" in transcriber.device_reason
+
+
+def test_transcribe_joins_segments_and_averages_confidence():
+    segments = [
+        SimpleNamespace(text=" Make me a box", avg_logprob=-0.2),
+        SimpleNamespace(text=" fifty long.", avg_logprob=-0.4),
+    ]
+    factory = lambda *a, **k: SimpleNamespace(  # noqa: E731
+        transcribe=lambda *a, **k: (iter(segments), SimpleNamespace(duration=4.6))
+    )
+    heard = Transcriber(device="cpu", _model_factory=factory).transcribe("x.wav")
+
+    assert heard.text == "Make me a box fifty long."
+    assert heard.confidence == pytest.approx(-0.3)
+    assert heard.seconds == pytest.approx(4.6)
+    assert heard.empty is False
+
+
+def test_an_empty_transcript_is_recognised_as_nothing_said():
+    factory = lambda *a, **k: SimpleNamespace(  # noqa: E731
+        transcribe=lambda *a, **k: (iter([]), SimpleNamespace(duration=0.0))
+    )
+    assert Transcriber(device="cpu", _model_factory=factory).transcribe("x.wav").empty
+
+
+def test_a_missing_voice_directory_returns_none_rather_than_raising(tmp_path):
+    """No voice installed is a reason to print, not a reason to fail."""
+    assert find_voice(tmp_path, "absent") is None
+
+
+def test_any_voice_beats_no_voice(tmp_path):
+    (tmp_path / "en_GB-other-medium.onnx").write_bytes(b"x")
+    assert find_voice(tmp_path, "en_US-lessac-medium").name == "en_GB-other-medium.onnx"
+
+
+def test_speaking_without_a_voice_is_reported_not_raised(tmp_path):
+    """`voice_path=None` means this speaker has no voice — not "go and find one"."""
+    speaker = Speaker(voice_path=None)
+    result = speaker.say("hello", tmp_path / "out.wav")
+    assert result.spoken is False
+    assert "no Piper voice" in result.detail
+
+
+def test_a_synthesis_failure_never_escapes(tmp_path):
+    """A session about a hot machine must not die because a voice model misbehaved."""
+
+    def exploding_voice(_path):
+        return SimpleNamespace(
+            synthesize_wav=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+
+    speaker = Speaker(voice_path=tmp_path / "v.onnx", _voice_factory=exploding_voice)
+    result = speaker.to_wav("hello", tmp_path / "out.wav")
+
+    assert result.spoken is False
+    assert "boom" in result.detail
+
+
+# -- the loop --------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("said", ["quit", "Stop.", "goodbye", "  Exit  ", "that's all"])
+def test_quit_words_end_the_session(said):
+    assert should_quit(said) is True
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "make the walls stop at the rim",
+        "add a stop block",
+        "design a box",
+        "can you stop the print",  # refused by the gate, not by the quit check
+    ],
+)
+def test_a_quit_word_inside_a_sentence_does_not_end_the_session(said):
+    """Matched on the whole utterance, never a substring — otherwise "make the walls
+    stop at the rim" hangs up on the person mid-design."""
+    assert should_quit(said) is False
+
+
+def test_reply_text_takes_only_assistant_text():
+    message = SimpleNamespace(
+        content=[
+            SimpleNamespace(text="Outer 40 by 30 by 15."),
+            SimpleNamespace(name="mcp__vtp__design_part", input={}),  # a tool call
+            SimpleNamespace(text="It's on screen."),
+        ]
+    )
+    assert reply_text(message) == "Outer 40 by 30 by 15. It's on screen."
+
+
+def test_reply_text_ignores_messages_with_no_content():
+    assert reply_text(SimpleNamespace()) == ""
+    assert reply_text(SimpleNamespace(content=None)) == ""
+
+
+def test_the_greeting_says_what_it_cannot_do():
+    """Said before the person asks for something that will be refused."""
+    assert "can't start or stop a print" in GREETING
+
+
+def test_the_limits_line_names_every_denied_tool():
+    line = VoiceLoop(speak=False, listen=False).explain_limits()
+    for tool in DENIED:
+        assert tool.rsplit("__", 1)[-1] in line
+
+
+def test_emit_prints_even_when_speech_is_off(capsys):
+    """A spoken sentence is gone the moment it is said; a misheard dimension needs
+    something to check against."""
+    VoiceLoop(speak=False, listen=False).emit("Outer 40 by 30 by 15 millimetres.")
+    assert "Outer 40 by 30 by 15" in capsys.readouterr().out
+
+
+def test_a_speaker_with_no_voice_never_discovers_one():
+    """The distinction the DISCOVER sentinel exists for."""
+    assert Speaker(voice_path=None).available is False
+
+
+def test_a_speaker_discovers_by_default_but_not_in_the_constructor(monkeypatch):
+    """Construction must not touch the filesystem — otherwise the object behaves
+    differently depending on which machine built it."""
+    calls = []
+    monkeypatch.setattr("vtp.voice.tts.find_voice", lambda *a, **k: calls.append(1))
+
+    speaker = Speaker()
+    assert calls == []          # nothing looked up yet
+    speaker.available
+    assert calls == [1]         # looked up once, on demand
+    speaker.available
+    assert calls == [1]         # and cached
+
+
+# --------------------------------------------------------------------------- #
+# Capture
+# --------------------------------------------------------------------------- #
+
+from vtp.voice.audio import Recording, microphone_available
+
+
+def test_an_empty_recording_is_silent():
+    """Regression. `np.abs([]).max()` raises, and letting that fall through to
+    "not silent" sent zero samples to Whisper — which hallucinates a plausible
+    sentence out of nothing and hands it to the agent as what the person said."""
+    import numpy as np
+
+    assert Recording(np.zeros(0, dtype="float32"), 16000, 0.0).silent is True
+
+
+def test_near_silence_is_silent_and_speech_is_not():
+    import numpy as np
+
+    quiet = np.full(16000, 0.001, dtype="float32")
+    loud = np.full(16000, 0.4, dtype="float32")
+
+    assert Recording(quiet, 16000, 1.0).silent is True
+    assert Recording(loud, 16000, 1.0).silent is False
+
+
+def test_microphone_availability_never_raises_and_explains_itself():
+    usable, reason = microphone_available()
+    assert isinstance(usable, bool)
+    assert reason
+    if not usable:
+        # A "no" has to say what to install, or it is just a dead end.
+        assert "install" in reason.lower()
+
+
+def test_a_machine_with_neither_backend_says_what_to_install(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_sounddevice(name, *args, **kwargs):
+        if name == "sounddevice":
+            raise OSError("PortAudio library not found")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_sounddevice)
+    monkeypatch.setattr("vtp.voice.audio._arecord_available", lambda: False)
+
+    usable, reason = microphone_available()
+    assert usable is False
+    assert "libportaudio2" in reason
+    assert "alsa-utils" in reason
+
+
+def test_arecord_is_used_when_portaudio_is_missing(monkeypatch):
+    """This machine has arecord and no PortAudio, so the fallback is the live path."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_sounddevice(name, *args, **kwargs):
+        if name == "sounddevice":
+            raise OSError("PortAudio library not found")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_sounddevice)
+    monkeypatch.setattr("vtp.voice.audio._arecord_available", lambda: True)
+
+    usable, reason = microphone_available()
+    assert usable is True
+    assert "arecord" in reason

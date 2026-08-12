@@ -165,11 +165,13 @@ Done:
   request); the four fixes above all came out of it. The testing rule below still holds:
   a print is started when the human says so, never to check something.
 
-In progress:
-- **Phase 7 voice — the safety half is done** (`src/vtp/voice/`). See below.
+- **Phase 7 — complete.** `src/vtp/voice/`: push-to-talk capture, faster-whisper STT,
+  Piper TTS, and a persistent agent session that cannot reach the machine. Verified
+  live in text mode: it designed a 40x30x15 box and read the numbers back, and it
+  refused a print request in its own words.
 
 Not started:
-- Phase 7's audio half: STT (faster-whisper), TTS, push-to-talk, the loop itself.
+- Nothing. Phases 0-3 and 5-7 are done; Phase 4 is superseded.
 - Phase 4 is superseded — see below.
 
 ### Slicing and the viewer (`slicer.py`, `viewer.py`)
@@ -385,7 +387,7 @@ the way in; the several minutes of `G28`/`G29`/heating count as elapsed while pr
 no progress, which skews any early extrapolation. Do not re-tune the profile off a
 mid-print reading — wait for `print_time_seconds` on a completed job.
 
-### Voice (`voice/`) — Phase 7, safety half complete
+### Voice (`voice/`) — Phase 7, complete
 
 - **The Agent SDK surface was verified, not recalled.** `BUILD_PLAN.md` says to check it
   when the phase starts, and it was: `claude-agent-sdk` 0.2.95, `ClaudeSDKClient` for the
@@ -418,6 +420,43 @@ mid-print reading — wait for `print_time_seconds` on a completed job.
 - **The voice extra is optional** (`pip install -e .[voice]`). The MCP server is the
   product and must install and run without a microphone, a GPU, or an agent SDK; nothing
   outside `src/vtp/voice/` imports any of it.
+
+#### The audio half
+
+- **CPU is enough for STT, and that was measured.** The plan named `large-v3-turbo` and
+  this machine has an RTX 4060, so the GPU looked obvious. It is not needed: `base.en`
+  transcribes a 4.6s utterance in **0.4s on CPU** (~11x realtime), `small.en` in 0.9s.
+  Using CUDA would have cost **over a gigabyte** of wheels — `libcublas.so.12` and cuDNN
+  are absent here and are *not* pulled in by faster-whisper — to save time nobody can
+  perceive at push-to-talk length. `stt_device = "cpu"` by default; `"auto"` probes and
+  falls back with a reason.
+- **CTranslate2 reports a CUDA device even when its runtime libraries are missing.** The
+  failure surfaces at model load, not at the device probe, so `Transcriber.load()`
+  catches it and retries on CPU.
+- **Piper synthesises ~37x faster than realtime** (0.12s for 4.6s of speech). TTS is not
+  the bottleneck and never will be.
+- **Neither PortAudio nor sudo is required on this machine.** `sounddevice` needs
+  `libportaudio2`, a system package. Rather than making that a hard requirement, capture
+  falls back to ALSA's `arecord` and playback to `aplay`, both from `alsa-utils`, which
+  is already here. Push-to-talk works today with no `sudo` at all.
+- **A zero-length recording is silent — checked first.** `np.abs([]).max()` *raises*, and
+  an earlier version let that fall through to "not silent", which sent zero samples to
+  Whisper. Whisper hallucinates confidently on silence (it will transcribe an empty room
+  as "Thank you.") and that hallucination would have become the utterance.
+- **Whisper segments carry their own leading space.** Joining them with `" "` doubles
+  every gap, and that doubled text is what gets spoken and sent to the agent. Strip, then
+  join.
+- **Quit words match the whole utterance, never a substring.** "stop" ends the session;
+  "make the walls stop at the rim" is a design request. A substring test hangs up on the
+  person mid-design.
+- **Every reply is printed as well as spoken.** A spoken sentence is gone the moment it
+  is said, and somebody who misheard a dimension has nothing to check against.
+- **Speaking never raises**, same rule as the viewer: an answer is correct whether or not
+  it was said aloud. No voice model, no speaker, no PortAudio — all degrade to printed
+  text mid-conversation rather than ending it.
+- `Speaker(voice_path=None)` means *this speaker has no voice*; discovery is a separate
+  `DISCOVER` sentinel and happens lazily, not in the constructor — a constructor that
+  touches the filesystem behaves differently on someone else's machine.
 
 ### The architecture change (supersedes BUILD_PLAN Phase 4)
 
