@@ -51,8 +51,9 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
             "A rectangular box with a separate press-fit lid. Use for storage "
             "boxes, enclosures, trays, parts bins, and containers. Dimensions "
             "given are OUTER unless the request says otherwise; the usable "
-            "interior is smaller by the wall thickness. Produces two printable "
-            "solids: the body and the lid."
+            "interior is smaller by the wall thickness. Walls can carry "
+            "rectangular openings ('ports') for cables, connectors or buttons. "
+            "Produces two printable solids: the body and the lid."
         ),
         params_model=box.BoxWithLidParams,
         build=box.build,

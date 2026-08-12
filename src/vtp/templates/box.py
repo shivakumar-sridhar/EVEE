@@ -15,6 +15,12 @@ Geometry notes (see CLAUDE.md for why these override BUILD_PLAN.md's text):
 * **The lid exports lip-up.** Plate on the bed, lip pointing +Z, so it slices
   without supports.
 
+* **Ports are cut after the fillet.** A port is a rectangular window through one
+  wall — for a cable, a connector, or a button. It is subtracted from the
+  finished body, so its own edges stay sharp and the vertical fillets are
+  untouched. A port never breaks the top rim: material is always left above it,
+  which the printer bridges.
+
 Cross-section, press_fit::
 
       +======================+      lid: full outer L x W
@@ -24,6 +30,14 @@ Cross-section, press_fit::
    | wall                  wall |
    |        (cavity)            |
    +----------------------------+
+
+Elevation of a walled face carrying one port::
+
+   +----------------------------+  <- top rim
+   |         (bridged)          |
+   |        +==========+        |  <- port top = z_offset + height
+   |        |          |        |
+   +--------+          +--------+  <- port bottom = cavity floor + z_offset
 """
 
 from __future__ import annotations
@@ -38,6 +52,7 @@ from vtp.config import clearance as default_clearance, geometry_defaults
 __all__ = [
     "BoxWithLidParams",
     "PART_NAMES",
+    "PortSpec",
     "TemplateError",
     "box_with_lid",
     "inner_dims",
@@ -48,8 +63,20 @@ PART_NAMES = ("body", "lid")
 
 LidStyle = Literal["press_fit", "sliding"]
 
+#: Which wall a port is cut through. left/right are the ends of ``outer_l`` (the
+#: +/-X faces); front/back are the ends of ``outer_w`` (the -/+Y faces).
+PortSide = Literal["left", "right", "front", "back"]
+
 #: Radii below this are treated as "no fillet" — OCC rejects a zero-radius fillet.
 _MIN_FILLET = 1e-6
+
+#: How far a port cutter pokes past each wall face. Coincident faces make the
+#: boolean ambiguous; this is the same trick the cavity uses.
+_OVERCUT = 1.0
+
+#: Material left above a port so the top rim survives and the lid still seats.
+#: The printer bridges this; keep it at least a couple of layers.
+_MIN_PORT_HEADER = 1.0
 
 
 class TemplateError(ValueError):
@@ -59,6 +86,35 @@ class TemplateError(ValueError):
 # --------------------------------------------------------------------------- #
 # Parameters
 # --------------------------------------------------------------------------- #
+
+
+class PortSpec(BaseModel):
+    """One rectangular window through one wall of the body.
+
+    Positions are measured from features a human can see, not from the origin:
+    ``z_offset`` rises from the cavity floor (the inside of the base, where a PCB
+    would rest), and ``offset`` slides along the wall from its centre.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    side: PortSide = Field(
+        description=(
+            "Which wall to cut. left/right are the ends of outer_l; "
+            "front/back are the ends of outer_w."
+        )
+    )
+    width: float = Field(gt=0, description="Opening width in mm, along the wall.")
+    height: float = Field(gt=0, description="Opening height in mm.")
+    z_offset: float = Field(
+        default=0.0,
+        ge=0,
+        description="Height in mm of the opening's bottom edge above the cavity floor.",
+    )
+    offset: float = Field(
+        default=0.0,
+        description="Shift in mm along the wall from its centre. Positive is +X or +Y.",
+    )
 
 
 class BoxWithLidParams(BaseModel):
@@ -106,6 +162,13 @@ class BoxWithLidParams(BaseModel):
         gt=0,
         description="How deep the lid lip engages the cavity, in mm.",
     )
+    ports: list[PortSpec] = Field(
+        default_factory=list,
+        description=(
+            "Rectangular openings cut through the walls, for cables, connectors "
+            "or buttons. Empty means a sealed box."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_geometry(self) -> "BoxWithLidParams":
@@ -117,6 +180,7 @@ class BoxWithLidParams(BaseModel):
             self.clearance,
             self.fillet,
             self.lip_height,
+            self.ports,
         )
         return self
 
@@ -129,6 +193,7 @@ def _validate(
     clearance: float,
     fillet: float,
     lip_height: float,
+    ports: "list[PortSpec] | None" = None,
 ) -> None:
     """Cross-field checks. Raises :class:`TemplateError` naming the bad values.
 
@@ -178,6 +243,51 @@ def _validate(
             f"{outer_h - wall}mm cavity (outer_h={outer_h}mm, wall={wall}mm)"
         )
 
+    for index, port in enumerate(ports or ()):
+        _validate_port(index, port, outer_l, outer_w, outer_h, wall, fillet)
+
+
+def _validate_port(
+    index: int,
+    port: "PortSpec",
+    outer_l: float,
+    outer_w: float,
+    outer_h: float,
+    wall: float,
+    fillet: float,
+) -> None:
+    """Check one port fits its wall, leaving corners and the top rim intact."""
+    where = f"ports[{index}] ({port.side})"
+
+    if port.width <= 0 or port.height <= 0:
+        raise TemplateError(
+            f"{where}: width and height must be positive, got "
+            f"{port.width}x{port.height}mm"
+        )
+    if port.z_offset < 0:
+        raise TemplateError(f"{where}: z_offset must be >= 0, got {port.z_offset}mm")
+
+    # The wall the port runs along, and how much of it the fillets have eaten.
+    span = outer_w if port.side in ("left", "right") else outer_l
+    usable = span - 2 * fillet
+    reach = port.width / 2 + abs(port.offset)
+    if reach > usable / 2:
+        raise TemplateError(
+            f"{where}: a {port.width}mm opening offset {port.offset}mm reaches "
+            f"{reach}mm from centre, past the {usable / 2}mm of flat wall on a "
+            f"{span}mm side with {fillet}mm fillets"
+        )
+
+    cavity_h = outer_h - wall
+    top = port.z_offset + port.height
+    if top > cavity_h - _MIN_PORT_HEADER:
+        raise TemplateError(
+            f"{where}: the opening reaches {top}mm above the cavity floor, "
+            f"leaving less than {_MIN_PORT_HEADER}mm of wall to bridge under the "
+            f"{cavity_h}mm rim (lower z_offset={port.z_offset}mm or "
+            f"height={port.height}mm, or raise outer_h={outer_h}mm)"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Derived quantities
@@ -219,7 +329,25 @@ def resolved_spec_sentence(params: BoxWithLidParams) -> str:
         f"with a {_fmt(params.lip_height)}mm lip, "
         f"{_fmt(params.fillet)}mm edge fillet. "
         f"Usable interior {_fmt(inner_l)}x{_fmt(inner_w)}x{_fmt(inner_h)}mm."
+        f"{_ports_phrase(params.ports)}"
     )
+
+
+def _ports_phrase(ports: list[PortSpec]) -> str:
+    """The ports half of the read-back. Empty string when there are none."""
+    if not ports:
+        return ""
+    described = []
+    for port in ports:
+        text = (
+            f"{port.side} {_fmt(port.width)}x{_fmt(port.height)}mm, "
+            f"{_fmt(port.z_offset)}mm above the floor"
+        )
+        if port.offset:
+            text += f", {_fmt(abs(port.offset))}mm off-centre"
+        described.append(text)
+    noun = "opening" if len(ports) == 1 else "openings"
+    return f" Wall {noun}: " + "; ".join(described) + "."
 
 
 # --------------------------------------------------------------------------- #
@@ -227,11 +355,38 @@ def resolved_spec_sentence(params: BoxWithLidParams) -> str:
 # --------------------------------------------------------------------------- #
 
 
+#: Centred in X and Y, sitting on Z=0 — every solid here is built in print pose.
+_ON_BED = (Align.CENTER, Align.CENTER, Align.MIN)
+
+
 def _fillet_vertical(part: Part, radius: float) -> Part:
     """Round the vertical (Z-parallel) edges. No-op below _MIN_FILLET."""
     if radius < _MIN_FILLET:
         return part
     return fillet_edges(part.edges().filter_by(Axis.Z), radius=radius)
+
+
+def _port_cutter(
+    port: PortSpec, outer_l: float, outer_w: float, wall: float
+) -> Part:
+    """A prism spanning one wall's thickness, to be subtracted from the body.
+
+    Overshoots both wall faces by ``_OVERCUT`` so neither boolean face is
+    coincident with an existing one.
+    """
+    through = wall + 2 * _OVERCUT
+    # Centre of the wall's thickness — the overcut is symmetric, so it cancels.
+    if port.side in ("left", "right"):
+        cutter = Box(through, port.width, port.height, align=_ON_BED)
+        sign = 1.0 if port.side == "right" else -1.0
+        centre = (sign * (outer_l / 2 - wall / 2), port.offset)
+    else:
+        cutter = Box(port.width, through, port.height, align=_ON_BED)
+        sign = 1.0 if port.side == "back" else -1.0
+        centre = (port.offset, sign * (outer_w / 2 - wall / 2))
+
+    # z_offset is measured from the cavity floor, which sits `wall` above the bed.
+    return cutter.locate(Location((centre[0], centre[1], wall + port.z_offset)))
 
 
 def box_with_lid(
@@ -243,12 +398,14 @@ def box_with_lid(
     clearance: float | None = None,
     fillet: float | None = None,
     lip_height: float | None = None,
+    ports: list[PortSpec] | None = None,
 ) -> tuple[Part, Part]:
     """Build a box body and a matching press-fit lid.
 
     All dimensions are in millimetres and **outer** unless named otherwise.
     ``None`` for wall / clearance / fillet / lip_height resolves from
-    ``config/defaults.toml``.
+    ``config/defaults.toml``. ``ports`` cuts rectangular windows through the
+    walls; ``None`` or ``[]`` gives a sealed box.
 
     Returns ``(body, lid)``. Both sit on the Z=0 plane in print orientation:
     the body opening faces +Z, the lid rests plate-down with its lip pointing +Z.
@@ -272,7 +429,8 @@ def box_with_lid(
     if lid_style != "press_fit":
         raise TemplateError(f"unknown lid_style {lid_style!r}")
 
-    _validate(outer_l, outer_w, outer_h, wall, clearance, fillet, lip_height)
+    ports = list(ports or ())
+    _validate(outer_l, outer_w, outer_h, wall, clearance, fillet, lip_height, ports)
 
     inner_l = outer_l - 2 * wall
     inner_w = outer_w - 2 * wall
@@ -280,14 +438,17 @@ def box_with_lid(
     # Zero means sharp inner corners, which print fine.
     inner_fillet = max(fillet - wall, 0.0)
 
-    on_bed = (Align.CENTER, Align.CENTER, Align.MIN)
-
     # --- body: filleted outer prism minus an over-tall inner prism ---------- #
-    body = _fillet_vertical(Box(outer_l, outer_w, outer_h, align=on_bed), fillet)
+    body = _fillet_vertical(Box(outer_l, outer_w, outer_h, align=_ON_BED), fillet)
     # Height outer_h (not outer_h - wall) so the cavity pokes out of the top:
     # a coincident top face would make the boolean ambiguous.
-    cavity = _fillet_vertical(Box(inner_l, inner_w, outer_h, align=on_bed), inner_fillet)
+    cavity = _fillet_vertical(Box(inner_l, inner_w, outer_h, align=_ON_BED), inner_fillet)
     body = body - cavity.locate(Location((0, 0, wall)))
+
+    # Ports come out after the fillet, so rounding the corners never rounds an
+    # opening and the openings never interrupt a fillet.
+    for port in ports:
+        body = body - _port_cutter(port, outer_l, outer_w, wall)
 
     # --- lid: plate at full outer dims, lip sized off the cavity ------------ #
     lip_l = inner_l - 2 * clearance
@@ -295,8 +456,8 @@ def box_with_lid(
     # Shrinking a rounded corner by `clearance` shrinks its radius by the same.
     lip_fillet = max(inner_fillet - clearance, 0.0)
 
-    plate = _fillet_vertical(Box(outer_l, outer_w, wall, align=on_bed), fillet)
-    lip = _fillet_vertical(Box(lip_l, lip_w, lip_height, align=on_bed), lip_fillet)
+    plate = _fillet_vertical(Box(outer_l, outer_w, wall, align=_ON_BED), fillet)
+    lip = _fillet_vertical(Box(lip_l, lip_w, lip_height, align=_ON_BED), lip_fillet)
     lid = plate + lip.locate(Location((0, 0, wall)))
 
     return body, lid
@@ -313,4 +474,5 @@ def build(params: BoxWithLidParams) -> tuple[Part, Part]:
         clearance=params.clearance,
         fillet=params.fillet,
         lip_height=params.lip_height,
+        ports=params.ports,
     )
