@@ -52,7 +52,9 @@ TEMPLATE_REGISTRY: dict[str, TemplateSpec] = {
             "boxes, enclosures, trays, parts bins, and containers. Dimensions "
             "given are OUTER unless the request says otherwise; the usable "
             "interior is smaller by the wall thickness. Walls can carry "
-            "rectangular openings ('ports') for cables, connectors or buttons. "
+            "rectangular openings ('ports') for cables, connectors or buttons, "
+            "and the cavity floor can carry cylindrical posts ('standoffs') that "
+            "a PCB rests on, screws into, or both. "
             "Produces two printable solids: the body and the lid."
         ),
         params_model=box.BoxWithLidParams,

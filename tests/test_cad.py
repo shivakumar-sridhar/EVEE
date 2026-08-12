@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 import trimesh
+from build123d import Compound, Mesher
 from pydantic import ValidationError
 
-from vtp.cad import design, render_preview
+from vtp.cad import REVIEW_GAP, design, render_preview
 from vtp.templates import TEMPLATE_REGISTRY, UnknownTemplateError, get_template
 
 ACCEPTANCE = dict(outer_l=50.0, outer_w=40.0, outer_h=20.0)
@@ -149,6 +150,54 @@ def test_slug_controls_the_filenames(tmp_path):
     )
     assert out.stl_paths["body"].name == "battery_tray_body.stl"
     assert out.stl_paths["lid"].name == "battery_tray_lid.stl"
+
+
+# --------------------------------------------------------------------------- #
+# The review model
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.slow
+def test_design_writes_one_review_model_holding_every_part(result):
+    assert result.review_path is not None
+    assert result.review_path.suffix == ".3mf"
+    assert result.review_path.is_file()
+    assert result.review_path.stat().st_size > 1000
+
+
+@pytest.mark.slow
+def test_the_review_model_spaces_the_parts_out(result):
+    """The bug this file exists for: body and lid must not occupy one spot.
+
+    Both STLs are centred on the origin in print pose, so a viewer handed them
+    together shows one shape where there are two. The review model bakes the
+    offsets into the coordinates, which is why its X span is wider than either
+    part and its Y span is not.
+    """
+    shapes = Mesher().read(result.review_path)
+    assert len(shapes) == 2, "the review model should hold both parts as objects"
+
+    scene = Compound(children=shapes).bounding_box()
+    body_x, body_y, _ = result.bounding_boxes["body"]
+    lid_x, _, _ = result.bounding_boxes["lid"]
+
+    assert scene.size.X == pytest.approx(body_x + lid_x + REVIEW_GAP, abs=0.05)
+    assert scene.size.Y == pytest.approx(body_y, abs=0.05)
+
+    # And they really are apart, not merely spanning a wide box together.
+    centres = sorted(shape.bounding_box().center().X for shape in shapes)
+    assert centres[1] - centres[0] > REVIEW_GAP
+
+
+@pytest.mark.slow
+def test_the_parts_themselves_stay_centred_for_slicing(result):
+    """Spacing is a property of the review, never of what gets printed."""
+    for name, path in result.stl_paths.items():
+        mesh = trimesh.load_mesh(path)
+        lo, hi = mesh.bounds
+        assert (lo[0] + hi[0]) / 2 == pytest.approx(0.0, abs=0.01), f"{name} moved in X"
+        assert (lo[1] + hi[1]) / 2 == pytest.approx(0.0, abs=0.01), f"{name} moved in Y"
+        assert lo[2] == pytest.approx(0.0, abs=0.01), f"{name} is off the bed"
 
 
 # --------------------------------------------------------------------------- #

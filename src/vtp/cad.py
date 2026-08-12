@@ -7,17 +7,18 @@ bounding boxes, and two rendered views per part — and nothing that starts a pr
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import trimesh
-from build123d import Part, export_stl
+from build123d import Location, Mesher, Part, export_stl
 
 from vtp.config import OUTPUT_DIR, export_tolerances
 from vtp.templates import TEMPLATE_REGISTRY, get_template
 
-__all__ = ["DesignResult", "design", "render_preview"]
+__all__ = ["DesignResult", "design", "export_review_model", "render_preview"]
 
 #: (elevation, azimuth) for the two preview views.
 _VIEWS: dict[str, tuple[float, float]] = {
@@ -37,6 +38,8 @@ class DesignResult:
     bounding_boxes: dict[str, tuple[float, float, float]]
     preview_paths: dict[str, list[Path]] = field(default_factory=dict)
     inner_dims: tuple[float, float, float] | None = None
+    #: One 3MF holding every part, spaced out — what the viewer opens. Never sliced.
+    review_path: Path | None = None
 
     def summary(self) -> str:
         """Human-readable block for the approval gate."""
@@ -93,6 +96,8 @@ def design(
         if render:
             preview_paths[name] = render_preview(stl_path)
 
+    review_path = export_review_model(parts, spec.part_names, target / f"{stem}_review.3mf")
+
     return DesignResult(
         template=spec.name,
         params=validated.model_dump(),
@@ -101,7 +106,53 @@ def design(
         bounding_boxes=bounding_boxes,
         preview_paths=preview_paths,
         inner_dims=spec.inner_dims(validated),
+        review_path=review_path,
     )
+
+
+#: Gap between parts in the review scene, in mm. Wide enough to read as separate
+#: objects at a glance, narrow enough that a two-part design still fits the bed.
+REVIEW_GAP = 8.0
+
+
+def export_review_model(
+    parts: Sequence[Part], names: Sequence[str], path: Path
+) -> Path:
+    """Write every part into one 3MF, laid out side by side along X.
+
+    This file exists to be looked at and nothing else. The STLs stay exactly where
+    a slicer needs them — each centred on the origin in print pose — and that is
+    precisely why they cannot be shown as they are: handed to a viewer together,
+    the body and its lid occupy the same space and you see one shape where there
+    are two. Spacing them is a property of the *review*, not of the parts, so it
+    lives in a separate file rather than moving the geometry anyone prints.
+
+    Positions are baked into the mesh coordinates, so no viewer has to be asked
+    politely to arrange anything.
+    """
+    widths = [part.bounding_box().size.X for part in parts]
+    total = sum(widths) + REVIEW_GAP * (len(widths) - 1)
+
+    placed = []
+    cursor = -total / 2
+    for part, width in zip(parts, widths):
+        placed.append(part.moved(Location((cursor + width / 2, 0, 0))))
+        cursor += width + REVIEW_GAP
+
+    linear, angular = export_tolerances()
+    mesher = Mesher()
+    for shape, name in zip(placed, names):
+        mesher.add_shape(
+            shape,
+            linear_deflection=linear,
+            angular_deflection=angular,
+            part_number=name,
+        )
+    mesher.write(path)
+
+    if not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"Mesher wrote nothing to {path}")
+    return path
 
 
 def _export(part: Part, path: Path) -> None:

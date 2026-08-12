@@ -6,9 +6,9 @@ Describe a part in a sentence, approve the geometry, approve the slice, and it p
 The pipeline is exposed as MCP tools, so the same interface works from a voice loop or
 from an agent like Claude Code.
 
-**Status: Phase 1 of 7.** The CAD layer works and is tested. Slicing, printer control,
-LLM extraction, and the MCP server are not built yet — see [Roadmap](#roadmap).
-[`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
+**Status: the full path works — design, slice, print.** Five MCP tools, three human
+gates, all enforced in Python. Notification and voice are the remaining phases — see
+[Roadmap](#roadmap). [`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
 
 ---
 
@@ -22,12 +22,25 @@ use it.
   firmware, inspect the hotend wiring, and have a working smoke detector in the room
   before any code touches the printer. Some older Creality boards shipped with thermal
   runaway protection disabled.
-- **`start_print()` will require an explicit `bed_confirmed_clear=True`,** with no
-  default. No agent can look at your bed. That argument is a human asserting they did.
-- **Two mandatory approval gates**, after design and after slicing. The pipeline never
-  chains design → slice → print in one call.
+- **`start_print()` requires an explicit `bed_confirmed_clear=True`,** with no default
+  anywhere in the chain. No agent can look at your bed. That argument is a human
+  asserting they did, and the check is `is not True` — a truthy value will not pass.
+- **Three mandatory approval gates**: after design, after slicing, and before the print
+  starts. No tool spans design, slicing and printing, so a model cannot skip one of
+  those by picking a shorter call. There is no `cancel_print` tool either: ending an
+  eight-hour print is not a decision to hand a model.
+- **`start_print` verifies which file it is starting.** OctoPrint's start command takes
+  no filename — it runs whatever is currently selected, possibly something a human
+  picked in the web UI hours ago. The client selects the file it was asked for and reads
+  the selection back before starting.
+- **`start_print` uploads and then starts.** Two separate OctoPrint requests with
+  `print=false` on the upload — that flag is never used — but one tool call, so the bed
+  confirmation is the only thing between the call and a moving machine. Nothing is
+  uploaded unless the bed is confirmed and the printer is already idle.
 
-These are enforced in code, not just in prompts.
+These are enforced in code, not just in prompts. `src/vtp/printer.py` is where they
+live; the MCP tool descriptions restate them so every client sees them, but the Python
+refusal is the mechanism.
 
 ---
 
@@ -135,10 +148,19 @@ directory picks it up. Verify with `/mcp`.
 
 Nothing Claude-specific is required. `python -m vtp.server` speaks MCP on its own.
 
-Two tools today: `list_templates()` returns each template's JSON Schema, and
-`design_part(template, params)` builds it. Call the first to learn the parameter
-contract, then the second. There is no free-text `description` parameter — your client's
-model picks the template and fills the schema, and the server validates it.
+Six tools, one per step, with a human decision between each:
+
+| Tool | Does | Gate after |
+|---|---|---|
+| `list_templates()` | returns each template's JSON Schema | — |
+| `design_part(template, params)` | builds STLs, opens them on the bed in PrusaSlicer | **1** — is the shape right? |
+| `slice_part(stl_path)` | slices with the verified profile; reports layers, grams, time | **2** — is the cost acceptable? |
+| `get_printer_status()` | state, temperatures, current job | **3** — is the build plate clear? |
+| `start_print(gcode_path, bed_confirmed_clear)` | uploads it to the printer and starts it | — |
+
+There is no free-text `description` parameter — your client's model picks the template
+and fills the schema, and the server validates it. `slice_part` takes no profile
+parameter, and nothing combines design, slicing and printing.
 
 ## Roadmap
 
@@ -146,15 +168,22 @@ model picks the template and fills the schema, and the server validates it.
 |---|---|---|
 | 0 | Hardware prep — human checklist, blocking | ☑ |
 | 1 | Parametric template + CAD dispatch | ☑ |
-| 2 | PrusaSlicer CLI wrapper, G-code metadata | ☐ |
-| 3 | OctoPrint REST client | ☐ |
+| 2 | PrusaSlicer CLI wrapper, G-code metadata | ☑ |
+| 3 | OctoPrint REST client | ☑ |
 | 4 | ~~LLM parameter extraction~~ — superseded, the client's model does this | — |
-| 5 | MCP server + the two approval gates | ◧ design tools done |
+| 5 | MCP server + the three approval gates | ☑ |
 | 6 | Async completion notification | ☐ |
 | 7 | Voice, push-to-talk | ☐ |
 
-Phases 0 and 1 are verified physically, not just in tests: a BNO085 sensor case was
-designed here, sliced with `config/ender3_v3se.ini`, and printed successfully.
+Phases 0–2 are verified physically, not just in tests: a BNO085 sensor case was
+designed here, sliced with `config/ender3_v3se.ini`, and printed successfully. The
+Phase 3 client is verified against the live machine for every read and for upload, and
+for each refusal path; the one thing not exercised end to end is a print actually
+started by `start_print`, which is a human's call to make.
+
+`start_print` originally split into `upload_gcode` and `start_print` so a human could
+see the file reach the printer before committing. That was folded back into one call on
+request; every Python guard survived, but the bed confirmation is now the last checkpoint.
 
 Templates grow by use. Anything you design twice becomes one; after ~10 parts you have
 covered most of what you actually print. Honest expectation: for a simple box this is

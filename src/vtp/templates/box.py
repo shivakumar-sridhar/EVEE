@@ -21,6 +21,12 @@ Geometry notes (see CLAUDE.md for why these override BUILD_PLAN.md's text):
   untouched. A port never breaks the top rim: material is always left above it,
   which the printer bridges.
 
+* **Standoffs are added last, and their screw holes are blind.** A standoff is a
+  cylindrical post on the cavity floor that a PCB sits on. Its hole stops short
+  of the floor, so the base of the box is never perforated, and the post itself
+  is sunk slightly into the floor so the union has no coincident faces. Posts
+  print without support — they rise straight off the floor in print pose.
+
 Cross-section, press_fit::
 
       +======================+      lid: full outer L x W
@@ -38,21 +44,42 @@ Elevation of a walled face carrying one port::
    |        +==========+        |  <- port top = z_offset + height
    |        |          |        |
    +--------+          +--------+  <- port bottom = cavity floor + z_offset
+
+Section through two standoffs carrying a board::
+
+   |      :  :            :  :      |  <- pilot holes, stopping above the floor
+   |     +----+          +----+     |  <- post top = board underside
+   |     |    |  height  |    |     |
+   +-----+----+----------+----+-----+  <- cavity floor
+   +--------------------------------+  <- base, never perforated
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from build123d import Align, Axis, Box, Location, Part, fillet as fillet_edges
+from build123d import (
+    Align,
+    Axis,
+    Box,
+    Cylinder,
+    Location,
+    Part,
+    fillet as fillet_edges,
+)
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from vtp.config import clearance as default_clearance, geometry_defaults
+from vtp.config import (
+    clearance as default_clearance,
+    geometry_defaults,
+    standoff_defaults,
+)
 
 __all__ = [
     "BoxWithLidParams",
     "PART_NAMES",
     "PortSpec",
+    "StandoffSpec",
     "TemplateError",
     "box_with_lid",
     "inner_dims",
@@ -77,6 +104,17 @@ _OVERCUT = 1.0
 #: Material left above a port so the top rim survives and the lid still seats.
 #: The printer bridges this; keep it at least a couple of layers.
 _MIN_PORT_HEADER = 1.0
+
+#: Wall left on each side of a standoff's pilot hole. Thinner than this and the
+#: boss splits when a self-tapping screw cuts its thread.
+_MIN_BOSS_WALL = 0.8
+
+#: How far short of the cavity floor a standoff's pilot hole stops. Keeps the
+#: base solid and keeps the hole's bottom face out of the floor plane.
+_BOSS_HOLE_STOP = 0.5
+
+#: A post shorter than this cannot hold a screw thread worth cutting.
+_MIN_SCREW_BOSS_HEIGHT = 1.5
 
 
 class TemplateError(ValueError):
@@ -114,6 +152,50 @@ class PortSpec(BaseModel):
     offset: float = Field(
         default=0.0,
         description="Shift in mm along the wall from its centre. Positive is +X or +Y.",
+    )
+
+
+class StandoffSpec(BaseModel):
+    """One cylindrical post rising from the cavity floor, for mounting a PCB.
+
+    Positions are measured from the centre of the cavity floor, which is also the
+    centre of the box — so a board's mounting holes translate directly: a hole
+    pattern 20mm x 18mm apart is four posts at ``(+/-10, +/-9)``.
+
+    A post with ``hole_diameter`` is a screw boss: the hole is a pilot for a
+    self-tapping screw, stopping short of the floor so the base stays solid. A
+    post with ``hole_diameter=0`` is a plain spacer that lifts and locates the
+    board without fixing it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(
+        description="Post centre in mm along X, measured from the interior centre."
+    )
+    y: float = Field(
+        description="Post centre in mm along Y, measured from the interior centre."
+    )
+    diameter: float = Field(
+        default_factory=lambda: standoff_defaults()["diameter"],
+        gt=0,
+        description="Outer diameter of the post in mm.",
+    )
+    height: float = Field(
+        default_factory=lambda: standoff_defaults()["height"],
+        gt=0,
+        description=(
+            "Post height in mm above the cavity floor — how far the board is "
+            "lifted off the base."
+        ),
+    )
+    hole_diameter: float = Field(
+        default_factory=lambda: standoff_defaults()["hole_diameter"],
+        ge=0,
+        description=(
+            "Pilot hole diameter in mm for a self-tapping screw (2.1 for M2.5, "
+            "1.7 for M2). 0 makes a solid spacer with no screw hole."
+        ),
     )
 
 
@@ -169,6 +251,14 @@ class BoxWithLidParams(BaseModel):
             "or buttons. Empty means a sealed box."
         ),
     )
+    standoffs: list[StandoffSpec] = Field(
+        default_factory=list,
+        description=(
+            "Posts on the cavity floor for mounting a PCB, positioned from the "
+            "interior centre to match the board's mounting holes. Empty means a "
+            "bare floor and a board that slides around."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_geometry(self) -> "BoxWithLidParams":
@@ -181,6 +271,7 @@ class BoxWithLidParams(BaseModel):
             self.fillet,
             self.lip_height,
             self.ports,
+            self.standoffs,
         )
         return self
 
@@ -194,6 +285,7 @@ def _validate(
     fillet: float,
     lip_height: float,
     ports: "list[PortSpec] | None" = None,
+    standoffs: "list[StandoffSpec] | None" = None,
 ) -> None:
     """Cross-field checks. Raises :class:`TemplateError` naming the bad values.
 
@@ -246,6 +338,11 @@ def _validate(
     for index, port in enumerate(ports or ()):
         _validate_port(index, port, outer_l, outer_w, outer_h, wall, fillet)
 
+    standoffs = list(standoffs or ())
+    for index, standoff in enumerate(standoffs):
+        _validate_standoff(index, standoff, outer_l, outer_w, outer_h, wall, lip_height)
+    _validate_standoffs_disjoint(standoffs)
+
 
 def _validate_port(
     index: int,
@@ -289,6 +386,81 @@ def _validate_port(
         )
 
 
+def _validate_standoff(
+    index: int,
+    standoff: "StandoffSpec",
+    outer_l: float,
+    outer_w: float,
+    outer_h: float,
+    wall: float,
+    lip_height: float,
+) -> None:
+    """Check one post fits the floor, clears the lid lip, and can hold a screw."""
+    where = f"standoffs[{index}] at ({_fmt(standoff.x)}, {_fmt(standoff.y)})"
+
+    if standoff.diameter <= 0 or standoff.height <= 0:
+        raise TemplateError(
+            f"{where}: diameter and height must be positive, got "
+            f"{standoff.diameter}mm dia x {standoff.height}mm tall"
+        )
+
+    # The post must land on the cavity floor, not inside a wall.
+    radius = standoff.diameter / 2
+    for axis, centre, inner in (
+        ("X", standoff.x, outer_l - 2 * wall),
+        ("Y", standoff.y, outer_w - 2 * wall),
+    ):
+        reach = abs(centre) + radius
+        if reach > inner / 2:
+            raise TemplateError(
+                f"{where}: a {standoff.diameter}mm post reaches {_fmt(reach)}mm from "
+                f"centre in {axis}, past the {_fmt(inner / 2)}mm half-width of the "
+                f"{_fmt(inner)}mm cavity floor (move it inboard or shrink diameter)"
+            )
+
+    # Anything taller than this is inside the volume the lid's lip drops into.
+    headroom = outer_h - wall - lip_height
+    if standoff.height > headroom:
+        raise TemplateError(
+            f"{where}: a {standoff.height}mm post is taller than the {_fmt(headroom)}mm "
+            f"of cavity below the lid lip, so the lid would not close "
+            f"(lower height, lower lip_height={lip_height}mm, or raise "
+            f"outer_h={outer_h}mm)"
+        )
+
+    if standoff.hole_diameter <= 0:
+        return
+
+    if standoff.hole_diameter + 2 * _MIN_BOSS_WALL > standoff.diameter:
+        raise TemplateError(
+            f"{where}: a {standoff.hole_diameter}mm hole in a {standoff.diameter}mm "
+            f"post leaves under {_MIN_BOSS_WALL}mm of wall per side and would split "
+            f"when the screw bites (need diameter >= "
+            f"{_fmt(standoff.hole_diameter + 2 * _MIN_BOSS_WALL)}mm)"
+        )
+    if standoff.height < _MIN_SCREW_BOSS_HEIGHT:
+        raise TemplateError(
+            f"{where}: a {standoff.height}mm post is too short to hold a screw "
+            f"thread (need height >= {_MIN_SCREW_BOSS_HEIGHT}mm, or set "
+            f"hole_diameter=0 for a plain spacer)"
+        )
+
+
+def _validate_standoffs_disjoint(standoffs: "list[StandoffSpec]") -> None:
+    """Reject posts that intersect each other — a merged blob is not a mount."""
+    for i, first in enumerate(standoffs):
+        for j, second in enumerate(standoffs[i + 1 :], start=i + 1):
+            gap = ((first.x - second.x) ** 2 + (first.y - second.y) ** 2) ** 0.5
+            touching = (first.diameter + second.diameter) / 2
+            if gap < touching:
+                raise TemplateError(
+                    f"standoffs[{i}] at ({_fmt(first.x)}, {_fmt(first.y)}) and "
+                    f"standoffs[{j}] at ({_fmt(second.x)}, {_fmt(second.y)}) are "
+                    f"{_fmt(gap)}mm apart but need {_fmt(touching)}mm to stay "
+                    f"separate posts"
+                )
+
+
 # --------------------------------------------------------------------------- #
 # Derived quantities
 # --------------------------------------------------------------------------- #
@@ -330,6 +502,7 @@ def resolved_spec_sentence(params: BoxWithLidParams) -> str:
         f"{_fmt(params.fillet)}mm edge fillet. "
         f"Usable interior {_fmt(inner_l)}x{_fmt(inner_w)}x{_fmt(inner_h)}mm."
         f"{_ports_phrase(params.ports)}"
+        f"{_standoffs_phrase(params.standoffs, inner_h, params.lip_height)}"
     )
 
 
@@ -348,6 +521,40 @@ def _ports_phrase(ports: list[PortSpec]) -> str:
         described.append(text)
     noun = "opening" if len(ports) == 1 else "openings"
     return f" Wall {noun}: " + "; ".join(described) + "."
+
+
+def _standoffs_phrase(
+    standoffs: list[StandoffSpec], inner_h: float, lip_height: float
+) -> str:
+    """The standoffs half of the read-back, with the headroom left above them.
+
+    The clear height matters more than the post height: it is what has to swallow
+    the board, its components and its cables, and it is not a number anyone can
+    read off the outer dimensions.
+    """
+    if not standoffs:
+        return ""
+
+    described = []
+    for standoff in standoffs:
+        bore = (
+            f"{_fmt(standoff.hole_diameter)}mm screw hole"
+            if standoff.hole_diameter > 0
+            else "solid spacer"
+        )
+        described.append(
+            f"({_fmt(standoff.x)}, {_fmt(standoff.y)}) {_fmt(standoff.diameter)}mm dia "
+            f"x {_fmt(standoff.height)}mm tall, {bore}"
+        )
+
+    tallest = max(standoff.height for standoff in standoffs)
+    clear = inner_h - lip_height - tallest
+    noun = "standoff" if len(standoffs) == 1 else "standoffs"
+    return (
+        f" {len(standoffs)} {noun} from the interior centre: "
+        + "; ".join(described)
+        + f". Clear height above the tallest post, under the lid lip: {_fmt(clear)}mm."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -389,6 +596,32 @@ def _port_cutter(
     return cutter.locate(Location((centre[0], centre[1], wall + port.z_offset)))
 
 
+def _standoff_post(standoff: StandoffSpec, wall: float) -> Part:
+    """The post itself, sunk into the floor so the union has no coincident face.
+
+    The sink is capped at half the wall so a short standoff on a thin base can
+    never poke out of the bottom of the box.
+    """
+    sink = min(wall / 2, _OVERCUT)
+    post = Cylinder(
+        radius=standoff.diameter / 2, height=standoff.height + sink, align=_ON_BED
+    )
+    return post.locate(Location((standoff.x, standoff.y, wall - sink)))
+
+
+def _standoff_hole(standoff: StandoffSpec, wall: float) -> Part:
+    """The blind pilot hole, from above the post's top down to near the floor.
+
+    Overshoots the top by ``_OVERCUT`` so the open end is unambiguous, and stops
+    ``_BOSS_HOLE_STOP`` above the cavity floor so the base stays solid.
+    """
+    depth = standoff.height - _BOSS_HOLE_STOP
+    cutter = Cylinder(
+        radius=standoff.hole_diameter / 2, height=depth + _OVERCUT, align=_ON_BED
+    )
+    return cutter.locate(Location((standoff.x, standoff.y, wall + _BOSS_HOLE_STOP)))
+
+
 def box_with_lid(
     outer_l: float,
     outer_w: float,
@@ -399,13 +632,15 @@ def box_with_lid(
     fillet: float | None = None,
     lip_height: float | None = None,
     ports: list[PortSpec] | None = None,
+    standoffs: list[StandoffSpec] | None = None,
 ) -> tuple[Part, Part]:
     """Build a box body and a matching press-fit lid.
 
     All dimensions are in millimetres and **outer** unless named otherwise.
     ``None`` for wall / clearance / fillet / lip_height resolves from
     ``config/defaults.toml``. ``ports`` cuts rectangular windows through the
-    walls; ``None`` or ``[]`` gives a sealed box.
+    walls; ``None`` or ``[]`` gives a sealed box. ``standoffs`` adds mounting
+    posts to the cavity floor; ``None`` or ``[]`` leaves it bare.
 
     Returns ``(body, lid)``. Both sit on the Z=0 plane in print orientation:
     the body opening faces +Z, the lid rests plate-down with its lip pointing +Z.
@@ -430,7 +665,10 @@ def box_with_lid(
         raise TemplateError(f"unknown lid_style {lid_style!r}")
 
     ports = list(ports or ())
-    _validate(outer_l, outer_w, outer_h, wall, clearance, fillet, lip_height, ports)
+    standoffs = list(standoffs or ())
+    _validate(
+        outer_l, outer_w, outer_h, wall, clearance, fillet, lip_height, ports, standoffs
+    )
 
     inner_l = outer_l - 2 * wall
     inner_w = outer_w - 2 * wall
@@ -449,6 +687,14 @@ def box_with_lid(
     # opening and the openings never interrupt a fillet.
     for port in ports:
         body = body - _port_cutter(port, outer_l, outer_w, wall)
+
+    # Posts go on after the ports, then every hole is drilled — so a post is
+    # never left with a half-cut bore because a later boolean landed on it.
+    for standoff in standoffs:
+        body = body + _standoff_post(standoff, wall)
+    for standoff in standoffs:
+        if standoff.hole_diameter > 0:
+            body = body - _standoff_hole(standoff, wall)
 
     # --- lid: plate at full outer dims, lip sized off the cavity ------------ #
     lip_l = inner_l - 2 * clearance
@@ -475,4 +721,5 @@ def build(params: BoxWithLidParams) -> tuple[Part, Part]:
         fillet=params.fillet,
         lip_height=params.lip_height,
         ports=params.ports,
+        standoffs=params.standoffs,
     )

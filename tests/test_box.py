@@ -7,14 +7,22 @@ every tolerance change.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from build123d import Align, Box, Location
 from pydantic import ValidationError
 
-from vtp.config import clearance as default_clearance, geometry_defaults
+from vtp.config import (
+    clearance as default_clearance,
+    geometry_defaults,
+    standoff_defaults,
+)
 from vtp.templates.box import (
+    _BOSS_HOLE_STOP,
     BoxWithLidParams,
     PortSpec,
+    StandoffSpec,
     TemplateError,
     box_with_lid,
     inner_dims,
@@ -294,6 +302,163 @@ def test_port_model_rejects_unknown_fields_and_bad_sides():
         PortSpec(side="right", width=9.0, height=5.0, diameter=3.0)
     with pytest.raises(ValidationError):
         PortSpec(side="topside", width=9.0, height=5.0)
+
+
+# --------------------------------------------------------------------------- #
+# Standoffs
+# --------------------------------------------------------------------------- #
+
+#: One post well clear of the walls and the lid lip at the acceptance dimensions.
+STANDOFF = dict(x=15.0, y=12.0, diameter=6.0, height=4.0)
+
+#: Volume a single post adds to the body. The stub sunk into the floor overlaps
+#: material that is already there, so only the part above the floor counts.
+POST_VOLUME = math.pi * (STANDOFF["diameter"] / 2) ** 2 * STANDOFF["height"]
+
+
+def test_a_standoff_adds_material_without_changing_the_envelope(parts):
+    """A post grows into the cavity — the outer dimensions must not move."""
+    bare, _ = parts
+    posted, _ = box_with_lid(**EXPLICIT, standoffs=[StandoffSpec(**STANDOFF)])
+
+    assert posted.volume > bare.volume
+    assert bbox_size(posted) == pytest.approx(bbox_size(bare), abs=1e-6)
+
+
+def test_a_solid_standoff_is_exactly_a_cylinder_on_the_floor(parts):
+    """No hole means no hole: pi r^2 h of added material and nothing removed."""
+    bare, _ = parts
+    posted, _ = box_with_lid(
+        **EXPLICIT, standoffs=[StandoffSpec(**STANDOFF, hole_diameter=0.0)]
+    )
+
+    assert posted.volume - bare.volume == pytest.approx(POST_VOLUME, rel=1e-4)
+
+
+def test_a_screw_boss_is_that_cylinder_less_a_blind_bore():
+    """The bore runs from the post top to _BOSS_HOLE_STOP above the cavity floor."""
+    solid, _ = box_with_lid(
+        **EXPLICIT, standoffs=[StandoffSpec(**STANDOFF, hole_diameter=3.0)]
+    )
+    unbored, _ = box_with_lid(
+        **EXPLICIT, standoffs=[StandoffSpec(**STANDOFF, hole_diameter=0.0)]
+    )
+
+    bore = math.pi * 1.5**2 * (STANDOFF["height"] - _BOSS_HOLE_STOP)
+    assert unbored.volume - solid.volume == pytest.approx(bore, rel=1e-4)
+
+
+@pytest.mark.parametrize("hole_diameter", [0.0, 3.0])
+def test_the_base_is_never_perforated(parts, hole_diameter):
+    """The bore stops above the floor, so a slab through the base is untouched.
+
+    This is the one that matters: a hole drilled a fraction too deep leaves a box
+    that looks right on screen and leaks light through the bottom.
+    """
+    bare, _ = parts
+    posted, _ = box_with_lid(
+        **EXPLICIT, standoffs=[StandoffSpec(**STANDOFF, hole_diameter=hole_diameter)]
+    )
+
+    floor = Box(1000, 1000, WALL, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    assert (posted & floor).volume == pytest.approx((bare & floor).volume, rel=1e-9)
+    assert posted.bounding_box().min.Z == pytest.approx(0.0, abs=1e-9)
+
+
+def test_four_standoffs_each_add_their_own_post(parts):
+    """A mounting pattern, at the corners of a board's hole spacing."""
+    bare, _ = parts
+    corners = [
+        StandoffSpec(**{**STANDOFF, "x": sx * 15.0, "y": sy * 12.0})
+        for sx in (1, -1)
+        for sy in (1, -1)
+    ]
+    posted, _ = box_with_lid(**EXPLICIT, standoffs=corners)
+
+    solid_posts = 4 * POST_VOLUME
+    bore = 4 * math.pi * (corners[0].hole_diameter / 2) ** 2 * (
+        STANDOFF["height"] - _BOSS_HOLE_STOP
+    )
+    assert posted.volume - bare.volume == pytest.approx(solid_posts - bore, rel=1e-4)
+
+
+def test_standoffs_appear_in_the_read_back_sentence():
+    params = BoxWithLidParams(
+        **EXPLICIT, standoffs=[StandoffSpec(**STANDOFF, hole_diameter=3.0)]
+    )
+    sentence = resolved_spec_sentence(params)
+
+    assert "1 standoff" in sentence
+    assert "(15, 12) 6mm dia x 4mm tall" in sentence
+    assert "3mm screw hole" in sentence
+    # inner_h 18 - lip 3 - post 4. The number nobody can read off the outer dims.
+    assert "Clear height above the tallest post, under the lid lip: 11mm" in sentence
+
+
+def test_a_holeless_standoff_reads_back_as_a_spacer():
+    params = BoxWithLidParams(
+        **EXPLICIT, standoffs=[StandoffSpec(**STANDOFF, hole_diameter=0.0)]
+    )
+    assert "solid spacer" in resolved_spec_sentence(params)
+
+
+def test_no_standoffs_says_nothing_about_standoffs():
+    assert "standoff" not in resolved_spec_sentence(BoxWithLidParams(**EXPLICIT))
+
+
+@pytest.mark.parametrize(
+    "standoffs, expected",
+    [
+        pytest.param(
+            [dict(x=22.0, y=0.0, diameter=6.0)],
+            "cavity floor",
+            id="post_hangs_over_the_wall",
+        ),
+        pytest.param(
+            [dict(x=0.0, y=0.0, height=16.0)],
+            "would not close",
+            id="post_taller_than_the_lid_lip_leaves_room_for",
+        ),
+        pytest.param(
+            [dict(x=0.0, y=0.0, diameter=4.0, hole_diameter=3.0)],
+            "split",
+            id="bore_leaves_too_little_wall",
+        ),
+        pytest.param(
+            [dict(x=0.0, y=0.0, diameter=6.0, height=1.0, hole_diameter=3.0)],
+            "too short",
+            id="post_too_short_to_thread",
+        ),
+        pytest.param(
+            [dict(x=0.0, y=0.0, diameter=6.0), dict(x=4.0, y=0.0, diameter=6.0)],
+            "separate posts",
+            id="posts_overlap",
+        ),
+    ],
+)
+def test_impossible_standoffs_are_rejected_with_a_message_naming_the_problem(
+    standoffs, expected
+):
+    with pytest.raises(TemplateError) as excinfo:
+        box_with_lid(**EXPLICIT, standoffs=[StandoffSpec(**s) for s in standoffs])
+    assert expected in str(excinfo.value)
+    assert "standoffs[0]" in str(excinfo.value)
+
+
+def test_standoff_model_rejects_unknown_fields():
+    """extra='forbid' holds for this nested model too — nesting is where it leaks."""
+    with pytest.raises(ValidationError):
+        StandoffSpec(x=0.0, y=0.0, side="left")
+
+
+def test_standoff_dimensions_come_from_defaults_toml():
+    """Post size is tuned in config/defaults.toml, not in the signature."""
+    house = standoff_defaults()
+    post = StandoffSpec(x=0.0, y=0.0)
+
+    assert post.diameter == house["diameter"]
+    assert post.height == house["height"]
+    assert post.hole_diameter == house["hole_diameter"]
 
 
 # --------------------------------------------------------------------------- #
