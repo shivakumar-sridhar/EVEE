@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,39 +144,60 @@ class Speaker:
         return Utterance(True, "spoken", target)
 
 
-def _play(path: Path) -> bool:
-    """Play a WAV. Tries sounddevice, then any system player. Never raises.
+#: Players to try, best first.
+#:
+#: ``pw-play`` leads because **``aplay`` is not safe on a PipeWire system**, which is
+#: most desktop Linux now. Against PipeWire's ALSA compatibility layer, ``aplay`` plays
+#: the sound and then **fails to exit**, holding the device open — so the first reply is
+#: heard, every later one blocks behind a process that never finishes, and the session
+#: silently degrades to text. Observed here with three ``aplay`` processes wedged for
+#: fifteen minutes. ``pw-play`` played the same file repeatedly with no trouble.
+#:
+#: ``aplay`` stays last: on a machine with bare ALSA and no sound server it is the only
+#: one present, and there it behaves.
+_PLAYERS = ("pw-play", "paplay", "aplay")
 
-    ``sounddevice`` needs PortAudio, which is a system package rather than a wheel, so
-    a working Python install is not enough. Falling back to ``aplay``/``paplay`` means
-    a machine without the library still speaks.
-    """
+
+def _wav_seconds(path: Path) -> float:
+    """How long the file is, for sizing the timeout. 0.0 if unreadable."""
     try:
-        import soundfile  # noqa: F401
-        import sounddevice as sd
+        with wave.open(str(path), "rb") as handle:
+            return handle.getnframes() / float(handle.getframerate() or 1)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
-        data, rate = soundfile.read(str(path), dtype="float32")
-        sd.play(data, rate)
-        sd.wait()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        log.debug("sounddevice playback unavailable: %s", exc)
 
-    for player in ("paplay", "aplay"):
+def _play(path: Path) -> bool:
+    """Play a WAV with the first player that works. Never raises.
+
+    The timeout is derived from the file's own length rather than a flat constant. A
+    spoken reply is a few seconds; the old 120s ceiling meant one wedged player stalled
+    the conversation for two minutes before anyone found out, which is indistinguishable
+    from the program having crashed.
+    """
+    limit = max(10.0, _wav_seconds(path) * 2 + 5.0)
+
+    for player in _PLAYERS:
         binary = shutil.which(player)
         if not binary:
             continue
-        import subprocess
-
         try:
             # capture_output: never let a player write to stdout, which under an MCP
             # stdio transport would be the JSON-RPC stream.
             done = subprocess.run(
-                [binary, str(path)], capture_output=True, timeout=120, check=False
+                [binary, str(path)], capture_output=True, timeout=limit, check=False
             )
             if done.returncode == 0:
                 return True
-            log.debug("%s exited %s", player, done.returncode)
+            log.warning("%s exited %s", player, done.returncode)
+        except subprocess.TimeoutExpired:
+            # subprocess.run kills it for us. Try the next player rather than giving
+            # up: a hung player is exactly the failure this list exists to route round.
+            log.warning(
+                "%s did not finish within %.0fs and was killed; trying the next player",
+                player,
+                limit,
+            )
         except Exception as exc:  # noqa: BLE001
-            log.debug("%s failed: %s", player, exc)
+            log.warning("%s failed: %s", player, exc)
     return False

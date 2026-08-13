@@ -117,9 +117,9 @@ it; all four are fixed. Seven MCP tools now, not five.
   swallowed and logged.
 - **ntfy carries text in HTTP headers when a file is attached**, and headers are latin-1,
   so the title and message are ASCII-folded before they go out.
-- The webcam is wired in but **aimed badly** — it frames the gantry against a bright
-  window and cannot see the plate, so a snapshot currently proves the printer exists
-  rather than that the print is fine.
+- The webcam was aimed badly (gantry against a bright window) and was **re-aimed
+  2026-08-12**. It now frames the whole plate, evenly lit, so a notification snapshot
+  answers "did my print work" rather than "is there a printer".
 
 `BUILD_PLAN.md` is the spec. Work through its phases in order, **one phase per session**,
 and within a phase **one feature at a time on the user's call** — do not run ahead.
@@ -454,6 +454,19 @@ mid-print reading — wait for `print_time_seconds` on a completed job.
 - **Speaking never raises**, same rule as the viewer: an answer is correct whether or not
   it was said aloud. No voice model, no speaker, no PortAudio — all degrade to printed
   text mid-conversation rather than ending it.
+- **`aplay` is not safe on a PipeWire system, and most desktop Linux now is one.**
+  Against PipeWire's ALSA compatibility layer it plays the sound and then *never exits*,
+  holding the device: the first reply is heard and every later one blocks behind a
+  process that will never finish. Found live — three `aplay` processes wedged for
+  fifteen minutes, two of them zombies under still-running sessions. `pw-play` replayed
+  the same file repeatedly without trouble, so `_PLAYERS` tries it first and keeps
+  `aplay` last for machines with bare ALSA and no sound server.
+- **The playback timeout is derived from the WAV's own length**, not a flat constant.
+  The old 120s ceiling meant one wedged player stalled the conversation for two minutes
+  before anything was reported, which is indistinguishable from a crash.
+- **A speech failure is printed once, in the transcript.** It used to be `log.debug`,
+  so a broken speaker looked like the voice "just stopping" with nothing to report.
+  Once, not per reply — repeating it every turn would be worse than the original bug.
 - `Speaker(voice_path=None)` means *this speaker has no voice*; discovery is a separate
   `DISCOVER` sentinel and happens lazily, not in the constructor — a constructor that
   touches the filesystem behaves differently on someone else's machine.

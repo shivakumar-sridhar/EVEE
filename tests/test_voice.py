@@ -217,6 +217,8 @@ def test_build_options_wires_the_gate_in():
 # --------------------------------------------------------------------------- #
 
 
+import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 from vtp.voice.loop import GREETING, VoiceLoop, reply_text, should_quit
@@ -506,3 +508,107 @@ def test_a_keyboard_interrupt_during_capture_is_also_not_a_crash(monkeypatch):
     )
 
     assert audio._record_with_arecord("prompt", 16000, 30.0) is None
+
+
+# --------------------------------------------------------------------------- #
+# Playback
+#
+# Regression tests for a live failure: on a PipeWire system `aplay` played the
+# first reply, never exited, and held the device — so the greeting was heard and
+# every later reply queued behind a process that would never finish. Three aplay
+# processes were found wedged for fifteen minutes.
+# --------------------------------------------------------------------------- #
+
+from vtp.voice.tts import _PLAYERS, _play, _wav_seconds
+
+
+def test_pipewire_player_is_preferred_over_aplay():
+    """Order is the fix. `aplay` hangs against PipeWire's ALSA layer; pw-play doesn't.
+    It stays in the list because on bare ALSA it is the only player present."""
+    assert _PLAYERS[0] == "pw-play"
+    assert _PLAYERS[-1] == "aplay"
+
+
+def test_a_hung_player_falls_through_to_the_next(monkeypatch, tmp_path):
+    """A wedged player must route around, not end the conversation."""
+    import subprocess as sp
+
+    wav = tmp_path / "x.wav"
+    with wave.open(str(wav), "wb") as h:
+        h.setnchannels(1)
+        h.setsampwidth(2)
+        h.setframerate(16000)
+        h.writeframes(b"\x00\x00" * 16000)
+
+    tried = []
+
+    def run(cmd, **kwargs):
+        tried.append(Path(cmd[0]).name)
+        if len(tried) == 1:
+            raise sp.TimeoutExpired(cmd, kwargs.get("timeout", 1))
+        return sp.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr("vtp.voice.tts.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("vtp.voice.tts.subprocess.run", run)
+
+    assert _play(wav) is True
+    assert len(tried) == 2, "should have moved on to the next player"
+
+
+def test_the_timeout_is_sized_from_the_audio_not_a_flat_two_minutes(tmp_path):
+    """The old flat 120s meant a wedged player stalled the conversation for two
+    minutes, which is indistinguishable from a crash."""
+    wav = tmp_path / "x.wav"
+    with wave.open(str(wav), "wb") as h:
+        h.setnchannels(1)
+        h.setsampwidth(2)
+        h.setframerate(16000)
+        h.writeframes(b"\x00\x00" * 16000 * 3)  # 3 seconds
+
+    assert _wav_seconds(wav) == pytest.approx(3.0)
+
+    captured = {}
+
+    def run(cmd, **kwargs):
+        import subprocess as sp
+
+        captured["timeout"] = kwargs.get("timeout")
+        return sp.CompletedProcess(cmd, 0, b"", b"")
+
+    import pytest as _pytest  # noqa: F401
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr("vtp.voice.tts.shutil.which", lambda n: f"/usr/bin/{n}")
+        mp.setattr("vtp.voice.tts.subprocess.run", run)
+        _play(wav)
+
+    assert captured["timeout"] < 30, "a 3s clip must not get a 2-minute budget"
+
+
+def test_an_unreadable_file_still_gets_a_usable_timeout(tmp_path):
+    missing = tmp_path / "nope.wav"
+    assert _wav_seconds(missing) == 0.0
+
+
+def test_a_broken_speaker_is_reported_once_not_silently(capsys):
+    """The bug behind "it just stopped talking": the reason was at debug level, so
+    the session degraded to text with nothing said about it."""
+    from vtp.voice.tts import Utterance
+
+    class Mute(Speaker):
+        def __init__(self):
+            super().__init__(voice_path=None)
+
+        def say(self, text, scratch=None):
+            return Utterance(False, "player wedged")
+
+    loop = VoiceLoop(speak=True, listen=False, speaker=Mute())
+    loop.speak = True  # tts_settings() may have switched it off
+
+    loop.emit("first reply")
+    loop.emit("second reply")
+    out = capsys.readouterr().out
+
+    assert out.count("speech unavailable") == 1, "say it once, not on every reply"
+    assert "player wedged" in out
+    assert "first reply" in out and "second reply" in out

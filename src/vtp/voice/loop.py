@@ -82,6 +82,8 @@ class VoiceLoop:
     transcriber: Transcriber = field(default_factory=Transcriber)
     speaker: Speaker = field(default_factory=Speaker)
     scratch: Path = field(default_factory=lambda: Path("/tmp/vtp-voice"))
+    #: So a broken speaker is reported once, not on every single reply.
+    _warned_silent: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.speak and not tts_settings()[2]:
@@ -98,10 +100,21 @@ class VoiceLoop:
         if not text:
             return
         print(f"\n  {text}\n", flush=True)
-        if self.speak:
-            result = self.speaker.say(text, self.scratch / "reply.wav")
-            if not result.spoken:
-                log.debug("not spoken: %s", result.detail)
+        if not self.speak:
+            return
+
+        result = self.speaker.say(text, self.scratch / "reply.wav")
+        if result.spoken:
+            return
+
+        # Told once, out loud in the transcript, not buried at debug level. Silently
+        # dropping to text is how somebody ends up thinking the voice "just stopped
+        # working" and has nothing to report but that. After the first time, stay
+        # quiet — repeating it on every reply would be worse than the original bug.
+        if not self._warned_silent:
+            print(f"  (speech unavailable: {result.detail} — printing only)\n", flush=True)
+            self._warned_silent = True
+        log.warning("not spoken: %s", result.detail)
 
     # -- input -------------------------------------------------------------- #
 
