@@ -22,7 +22,10 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import sys
 import tempfile
+import termios
+import tty
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +33,7 @@ from typing import Any
 
 from vtp.config import push_to_talk_settings
 
-__all__ = ["Recording", "microphone_available", "record_until_enter"]
+__all__ = ["Recording", "microphone_available", "record_utterance", "wait_for_key"]
 
 log = logging.getLogger("vtp.voice.audio")
 
@@ -119,20 +122,69 @@ def microphone_available() -> tuple[bool, str]:
     )
 
 
-def record_until_enter(prompt: str = "[press Enter to stop] ") -> Recording | None:
-    """Record from the default microphone until the human presses Enter.
+#: Keys that end a session instead of starting a recording.
+_QUIT_KEYS = {"q", "\x03", "\x04"}  # q, Ctrl-C, Ctrl-D
 
-    Returns None if the microphone is unusable — the caller falls back to typing.
 
-    Enter rather than key-held-down deliberately: reading a held key needs either a raw
-    terminal or an X grab, and neither survives being run over SSH or inside an editor's
-    terminal. Enter works everywhere, which matters more than the ergonomics.
+def wait_for_key(accept: set[str] = frozenset({" "})) -> str | None:
+    """Block until one of ``accept`` (or a quit key) is pressed. ``None`` to quit.
+
+    Reads a single keypress with no Enter, via cbreak mode. This is as close to
+    push-to-talk as a terminal allows: **terminals deliver key presses as characters and
+    have no concept of a key being released.** Hold-to-talk needs raw ``/dev/input``
+    access — a different permission (the ``input`` group) and a different failure mode
+    when it is missing. A press to start and a press to stop needs neither, and costs
+    one extra tap.
+
+    Returns None on EOF or an interrupt, so a piped stdin ends the loop rather than
+    spinning.
+    """
+    try:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+    except Exception:  # noqa: BLE001 - not a terminal; caller degrades to typing
+        return None
+
+    try:
+        tty.setcbreak(fd)
+        while True:
+            char = sys.stdin.read(1)
+            if not char or char in _QUIT_KEYS:
+                return None
+            if char in accept:
+                return char
+    except (KeyboardInterrupt, OSError, ValueError):
+        return None
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def record_utterance() -> Recording | None:
+    """Record between two presses of the space bar.
+
+    Space to start, space to stop. Returns None when the microphone is unusable or the
+    person quit — the caller falls back to typing or ends the session.
     """
     usable, reason = microphone_available()
     if not usable:
         log.warning("no microphone: %s", reason)
         return None
 
+    print("  [space to talk, q to quit] ", end="", flush=True)
+    if wait_for_key() is None:
+        return None
+    print("\r  [recording — space to stop]      ", end="", flush=True)
+
+    recording = _capture_until_space()
+    print("\r" + " " * 40 + "\r", end="", flush=True)
+    return recording
+
+
+def _capture_until_space() -> Recording | None:
+    """Run the microphone until the space bar is pressed again."""
     import numpy as np
 
     rate, max_seconds, _silence = push_to_talk_settings()
@@ -140,7 +192,7 @@ def record_until_enter(prompt: str = "[press Enter to stop] ") -> Recording | No
     try:
         import sounddevice as sd
     except Exception:  # noqa: BLE001
-        return _record_with_arecord(prompt, rate, max_seconds)
+        return _record_with_arecord(rate, max_seconds)
 
     frames: list[Any] = []
 
@@ -153,7 +205,7 @@ def record_until_enter(prompt: str = "[press Enter to stop] ") -> Recording | No
         with sd.InputStream(
             samplerate=rate, channels=1, dtype="float32", callback=collect
         ):
-            input(prompt)
+            wait_for_key()
     except Exception as exc:  # noqa: BLE001
         log.warning("recording failed: %s", exc)
         return None
@@ -172,7 +224,7 @@ def record_until_enter(prompt: str = "[press Enter to stop] ") -> Recording | No
     return Recording(samples, rate, samples.size / rate, truncated)
 
 
-def _record_with_arecord(prompt: str, rate: int, max_seconds: float) -> Recording | None:
+def _record_with_arecord(rate: int, max_seconds: float) -> Recording | None:
     """Record via ALSA's ``arecord`` when PortAudio is not installed.
 
     Same contract as :func:`record_until_enter`: capture until Enter, never raise,
@@ -207,12 +259,12 @@ def _record_with_arecord(prompt: str, rate: int, max_seconds: float) -> Recordin
             return None
 
         try:
-            input(prompt)
+            wait_for_key()
         except (EOFError, KeyboardInterrupt):
-            # No terminal to press Enter in, or the person gave up. Both mean "no
-            # utterance", not "crash". `finally` alone would let this escape and take
-            # the whole conversation down with a traceback.
-            log.debug("capture interrupted before Enter")
+            # No terminal, or the person gave up. Both mean "no utterance", not
+            # "crash". `finally` alone would let this escape and take the whole
+            # conversation down with a traceback.
+            log.debug("capture interrupted before the second press")
             return None
         finally:
             process.terminate()

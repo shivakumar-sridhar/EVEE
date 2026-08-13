@@ -157,9 +157,27 @@ def test_the_system_prompt_tells_the_model_it_cannot_print():
     prompt = " ".join(VOICE_SYSTEM_PROMPT.split())
 
     assert "cannot start a print" in prompt
-    assert "spoken aloud" in prompt
-    # Read-back of dimensions matters: speech recognition mangles numbers.
-    assert "Read dimensions back" in prompt
+    assert "read aloud" in prompt
+
+
+def test_the_system_prompt_asks_for_short_spoken_replies():
+    """The complaint that prompted this: replies read like documents, not speech."""
+    prompt = " ".join(VOICE_SYSTEM_PROMPT.split())
+
+    assert "Two or three sentences" in prompt
+    assert "No file paths" in prompt
+    # A worked contrast beats an adjective — "be concise" alone did not work.
+    assert "Good:" in prompt and "Bad:" in prompt
+
+
+def test_the_system_prompt_forbids_claiming_an_unmade_lookup():
+    """Observed live: it said "got the board size from Adafruit" for numbers it had
+    only recalled, naming a source it never opened. A number nobody checked ends up
+    in a printed part."""
+    prompt = " ".join(VOICE_SYSTEM_PROMPT.split())
+
+    assert "Never say you looked something up unless you actually called a tool" in prompt
+    assert "from memory" in prompt
 
 
 # --------------------------------------------------------------------------- #
@@ -488,10 +506,11 @@ def test_capture_interrupted_before_enter_returns_none_not_a_traceback(monkeypat
 
     monkeypatch.setattr(audio.subprocess, "Popen", lambda *a, **k: FakeProc())
     monkeypatch.setattr(
-        "builtins.input", lambda *_a: (_ for _ in ()).throw(EOFError("no tty"))
+        "vtp.voice.audio.wait_for_key",
+        lambda *_a, **_k: (_ for _ in ()).throw(EOFError("no tty")),
     )
 
-    assert audio._record_with_arecord("prompt", 16000, 30.0) is None
+    assert audio._record_with_arecord(16000, 30.0) is None
 
 
 def test_a_keyboard_interrupt_during_capture_is_also_not_a_crash(monkeypatch):
@@ -504,10 +523,11 @@ def test_a_keyboard_interrupt_during_capture_is_also_not_a_crash(monkeypatch):
 
     monkeypatch.setattr(audio.subprocess, "Popen", lambda *a, **k: FakeProc())
     monkeypatch.setattr(
-        "builtins.input", lambda *_a: (_ for _ in ()).throw(KeyboardInterrupt)
+        "vtp.voice.audio.wait_for_key",
+        lambda *_a, **_k: (_ for _ in ()).throw(KeyboardInterrupt),
     )
 
-    assert audio._record_with_arecord("prompt", 16000, 30.0) is None
+    assert audio._record_with_arecord(16000, 30.0) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -612,3 +632,63 @@ def test_a_broken_speaker_is_reported_once_not_silently(capsys):
     assert out.count("speech unavailable") == 1, "say it once, not on every reply"
     assert "player wedged" in out
     assert "first reply" in out and "second reply" in out
+
+
+# --------------------------------------------------------------------------- #
+# Space-toggle capture, web tools, pinned model
+# --------------------------------------------------------------------------- #
+
+
+def test_web_tools_are_allowed_but_the_machine_still_is_not():
+    """Looking a part up is most of what designing a case is. Reading a web page
+    moves no machine, so it is outside what the gate exists to stop."""
+    assert decide("WebSearch").allowed is True
+    assert decide("WebFetch").allowed is True
+
+    for tool in DENIED:
+        assert decide(tool).allowed is False
+
+
+def test_the_model_is_pinned_not_inherited():
+    """Unpinned, voice quality drifts with an unrelated CLI setting and the person
+    hears the difference without being able to explain it."""
+    from vtp.config import voice_model
+    from vtp.voice.session import build_options
+
+    assert voice_model() == "opus"
+    assert build_options().model == "opus"
+
+
+def test_a_quit_key_ends_the_session_rather_than_recording(monkeypatch):
+    from vtp.voice import audio
+
+    monkeypatch.setattr(audio, "microphone_available", lambda: (True, "fake"))
+    monkeypatch.setattr(audio, "wait_for_key", lambda *a, **k: None)
+
+    assert audio.record_utterance() is None
+
+
+def test_capture_runs_between_two_presses(monkeypatch):
+    """Space to start, space to stop — the second press is what ends the recording."""
+    from vtp.voice import audio
+
+    presses = []
+    monkeypatch.setattr(audio, "microphone_available", lambda: (True, "fake"))
+    monkeypatch.setattr(
+        audio, "wait_for_key", lambda *a, **k: (presses.append(1), " ")[1]
+    )
+    monkeypatch.setattr(audio, "_capture_until_space", lambda: "RECORDING")
+
+    assert audio.record_utterance() == "RECORDING"
+    assert len(presses) == 1, "the start press; the stop press is inside the capture"
+
+
+def test_wait_for_key_returns_none_without_a_terminal(monkeypatch):
+    """Piped stdin must end the loop rather than spin on an unreadable fd."""
+    from vtp.voice import audio
+
+    monkeypatch.setattr(
+        "vtp.voice.audio.termios.tcgetattr",
+        lambda _fd: (_ for _ in ()).throw(OSError("not a tty")),
+    )
+    assert audio.wait_for_key() is None

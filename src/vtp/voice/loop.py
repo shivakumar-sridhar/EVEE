@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from vtp.config import tts_settings
-from vtp.voice.audio import microphone_available, record_until_enter
+from vtp.voice.audio import microphone_available, record_utterance
 from vtp.voice.gate import DENIED
 from vtp.voice.stt import Transcriber
 from vtp.voice.tts import Speaker
@@ -121,7 +121,7 @@ class VoiceLoop:
     def hear(self) -> str | None:
         """One utterance, spoken or typed. None means the person is done."""
         if self.listen:
-            recording = record_until_enter("  [speak, then press Enter] ")
+            recording = record_utterance()
             if recording is None:
                 log.warning("microphone became unusable; switching to typed input")
                 self.listen = False
@@ -150,12 +150,12 @@ class VoiceLoop:
         from vtp.voice.session import build_options
 
         if self.listen and not sys.stdin.isatty():
-            # Push-to-talk needs somewhere to press Enter. Piped or run from an agent's
-            # shell there is no terminal, and trying to record anyway ends in an
-            # EOFError from the middle of the capture. Typed input still works from a
+            # Push-to-talk needs a terminal to read single keypresses from. Piped, or
+            # run from an agent's shell, there is none, and trying to record anyway
+            # fails from the middle of the capture. Typed input still works from a
             # pipe, so degrade to it and say why.
             print(
-                "  No terminal to press Enter in, so push-to-talk is off.\n"
+                "  No terminal to read keypresses from, so push-to-talk is off.\n"
                 "  Reading typed input instead — run this in a real terminal to speak.\n"
             )
             self.listen = False

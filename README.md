@@ -168,9 +168,12 @@ uv sync --extra voice
 python -m vtp.voice          # push-to-talk; --text to type, --quiet to not be spoken to
 ```
 
-Push-to-talk, not a wake word: nothing is recorded until you press a key. Speech
-recognition is faster-whisper and synthesis is Piper, both local and both on CPU —
-`base.en` transcribes a 4.6-second utterance in 0.4s, so the GPU is not needed.
+Push-to-talk, not a wake word: nothing is recorded until you press space, and space
+again ends the utterance. (A terminal cannot detect a key being *released*, so
+hold-to-talk would need raw `/dev/input` access and the `input` group; two taps needs
+neither.) Speech recognition is faster-whisper and synthesis is Piper, both local and
+both on CPU — `base.en` transcribes a 4.6-second utterance in 0.4s, so the GPU is not
+needed.
 
 **A voice session cannot start, cancel, or calibrate.** Those tools are denied by
 `src/vtp/voice/gate.py` before they run, through the Agent SDK's permission callback —

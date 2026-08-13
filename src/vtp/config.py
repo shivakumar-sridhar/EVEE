@@ -301,6 +301,12 @@ def stt_settings() -> tuple[str, str, str | None]:
     return str(table["stt_model"]), str(table["stt_device"]), language
 
 
+def voice_model() -> str | None:
+    """Model the voice session pins, or None to follow the CLI's own default."""
+    name = str(load_defaults()["voice"].get("model") or "").strip()
+    return name or None
+
+
 def tts_settings() -> tuple[Path, str, bool]:
     """``(voice_dir, voice_name, speak_replies)`` for speech synthesis."""
     table = load_defaults()["voice"]

@@ -189,6 +189,11 @@ poll_seconds_idle = 30
 #
 # Bigger models: small.en, medium.en, large-v3-turbo. Accuracy rises, load time rises
 # faster (base.en ~10s cold, small.en ~37s), and the model is loaded once per session.
+# Which model reasons about your request. Pinned so voice quality does not drift with
+# whatever the `claude` CLI is configured to use — an unrelated setting should not change
+# how well it reasons about millimetres. Set to "" to follow the CLI default instead.
+model = "opus"
+
 stt_model = "base.en"
 stt_device = "cpu"
 language = "en"

@@ -42,6 +42,14 @@ VOICE_ALLOWED_TOOLS: tuple[str, ...] = (
     "mcp__vtp__design_part",
     "mcp__vtp__slice_part",
     "mcp__vtp__get_printer_status",
+    # Looking a part up is most of what designing a case *is* — "a box for a BNO085"
+    # is only answerable if the board's dimensions can be found. Without these the
+    # model has to answer from memory, and observed behaviour was worse than useless:
+    # it said "got the board size from Adafruit" for numbers it had merely recalled,
+    # naming a source it had never opened. Reading a web page moves no machine, so it
+    # is outside what this gate exists to stop.
+    "WebSearch",
+    "WebFetch",
 )
 
 #: Tools that move the machine, mapped to why voice may not reach them. Each of these

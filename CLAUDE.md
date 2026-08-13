@@ -421,6 +421,26 @@ mid-print reading — wait for `print_time_seconds` on a completed job.
   product and must install and run without a microphone, a GPU, or an agent SDK; nothing
   outside `src/vtp/voice/` imports any of it.
 
+#### Fixes from the first spoken session (2026-08-12)
+
+- **Space to start, space to stop** — not Enter, and not hold-to-talk. **A terminal
+  cannot detect a key being released**; it delivers presses as characters. True
+  hold-to-talk needs raw `/dev/input` access and membership of the `input` group, which
+  is a `sudo` and a re-login away. Two taps needs neither and costs one keystroke.
+- **The voice session had no web tools**, so "design a case for my BNO085" could only be
+  answered from memory. Worse than useless in practice: it reported *"got the board size
+  from Adafruit"* for numbers it had merely recalled, naming a source it never opened —
+  and an unchecked number ends up in a printed part. `WebSearch`/`WebFetch` are now
+  allowed (they move no machine, so they are outside what the gate exists to stop) and
+  the prompt forbids claiming a lookup that did not happen.
+- **The model is pinned** (`[voice] model = "opus"`). Unpinned it followed whatever the
+  `claude` CLI was set to, so voice quality drifted with an unrelated setting and the
+  person hears the difference without being able to explain it. This was the real answer
+  to "is it a different model?" — it might have been, and nothing said so.
+- **"Keep them short" did not work.** The replacement gives a rule (two or three
+  sentences), bans the unspeakable (paths, markdown, bullets), and shows a worked
+  good/bad contrast. An adjective is not an instruction.
+
 #### The audio half
 
 - **CPU is enough for STT, and that was measured.** The plan named `large-v3-turbo` and
