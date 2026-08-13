@@ -165,7 +165,7 @@ def test_a_finished_print_is_pushed_and_recorded(isolated_audit_log, monkeypatch
     event = watcher.poll_once()
 
     assert event.kind == "finished"
-    events = [json.loads(l) for l in isolated_audit_log.read_text().splitlines()]
+    events = [json.loads(l) for l in isolated_audit_log.read_text(encoding="utf-8").splitlines()]
     assert [e["event"] for e in events] == ["print_started", "print_finished"]
     assert events[-1]["file"] == "plate.gcode"
     assert events[-1]["source"] == "notify"
@@ -188,7 +188,7 @@ def test_an_unreachable_printer_is_not_reported_as_a_ruined_print(isolated_audit
 
     assert watcher.poll_once() is None
     assert notifier.sent == []
-    assert not isolated_audit_log.exists() or isolated_audit_log.read_text() == ""
+    assert not isolated_audit_log.exists() or isolated_audit_log.read_text(encoding="utf-8") == ""
     # And it must still believe a print is running, so the real ending is not missed.
     assert watcher.seen.printing is True
 
@@ -344,3 +344,262 @@ def test_starting_the_daemon_mid_print_does_not_announce_a_start(isolated_audit_
 
     assert watcher.poll_once().kind == "finished"
     assert len(notifier.sent) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Writing to .env
+#
+# This edits a file holding a live printer API key. The tests are about what must
+# NOT change, not about the one line that does.
+# --------------------------------------------------------------------------- #
+
+from vtp.config import _dotenv, env_value, write_env_value
+
+ENV_SAMPLE = """\
+# Copy to .env and fill in. .env is gitignored — never commit the real key.
+
+# OctoPrint. Settings -> Application Keys on the Pi.
+OCTOPRINT_URL=http://192.168.0.113
+OCTOPRINT_API_KEY=SECRETKEYVALUE
+
+LLM_BACKEND=ollama
+OLLAMA_HOST=http://localhost:11434
+"""
+
+
+def test_writing_a_key_leaves_every_other_line_alone(tmp_path):
+    """The file holds a live API key and hand-written comments. Only one line may move."""
+    env = tmp_path / ".env"
+    env.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    after = env.read_text(encoding="utf-8").splitlines()
+
+    for line in ENV_SAMPLE.splitlines():
+        assert line in after, f"lost: {line!r}"
+    assert "NTFY_TOPIC=vtp-abc123" in after
+    # Exactly one line added, nothing reordered.
+    assert len(after) == len(ENV_SAMPLE.splitlines()) + 1
+
+
+def test_the_api_key_survives_verbatim(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+
+    assert "OCTOPRINT_API_KEY=SECRETKEYVALUE" in env.read_text(encoding="utf-8")
+
+
+def test_an_existing_key_is_replaced_in_place_not_appended(tmp_path):
+    """_dotenv takes the LAST occurrence, so an appended duplicate would silently win
+    while the top of the file still showed the old value."""
+    env = tmp_path / ".env"
+    env.write_text(ENV_SAMPLE + "NTFY_TOPIC=vtp-old\nTRAILING=yes\n", encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "vtp-new", env)
+    lines = env.read_text(encoding="utf-8").splitlines()
+
+    assert lines.count("NTFY_TOPIC=vtp-new") == 1
+    assert "NTFY_TOPIC=vtp-old" not in lines
+    # Replaced where it was — the line after it did not move to the top.
+    assert lines.index("NTFY_TOPIC=vtp-new") < lines.index("TRAILING=yes")
+
+
+def test_pre_existing_duplicates_are_collapsed(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("NTFY_TOPIC=one\nOTHER=x\nNTFY_TOPIC=two\n", encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "three", env)
+    lines = env.read_text(encoding="utf-8").splitlines()
+
+    assert lines.count("NTFY_TOPIC=three") == 1
+    assert not any("one" in line or "two" in line for line in lines)
+    assert "OTHER=x" in lines
+
+
+def test_an_exported_key_is_still_recognised(tmp_path):
+    """.env.example documents `export KEY=` as legal, so the writer must match it."""
+    env = tmp_path / ".env"
+    env.write_text("export NTFY_TOPIC=old\nKEEP=1\n", encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "new", env)
+    text = env.read_text(encoding="utf-8")
+
+    assert "old" not in text
+    assert "NTFY_TOPIC=new" in text
+    assert "KEEP=1" in text
+
+
+def test_a_commented_out_key_is_not_treated_as_the_key(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("# NTFY_TOPIC=example-from-docs\nKEEP=1\n", encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "real", env)
+    lines = env.read_text(encoding="utf-8").splitlines()
+
+    assert "# NTFY_TOPIC=example-from-docs" in lines  # comment preserved
+    assert "NTFY_TOPIC=real" in lines
+
+
+def test_the_previous_file_is_backed_up(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(ENV_SAMPLE, encoding="utf-8")
+
+    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+
+    assert (tmp_path / ".env.bak").read_text(encoding="utf-8") == ENV_SAMPLE
+
+
+def test_a_missing_env_is_created_from_the_example(tmp_path):
+    (tmp_path / ".env.example").write_text("# docs\nOCTOPRINT_URL=\n", encoding="utf-8")
+    env = tmp_path / ".env"
+
+    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    text = env.read_text(encoding="utf-8")
+
+    assert "# docs" in text  # arrives documented, not as a bare key=value
+    assert "NTFY_TOPIC=vtp-abc123" in text
+
+
+def test_a_missing_env_with_no_example_still_works(tmp_path):
+    env = tmp_path / ".env"
+    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    assert env.read_text(encoding="utf-8") == "NTFY_TOPIC=vtp-abc123\n"
+
+
+def test_a_value_containing_a_hash_survives(tmp_path):
+    """'#' is legal in a key, and _dotenv deliberately does not strip inline comments."""
+    env = tmp_path / ".env"
+    write_env_value("OCTOPRINT_API_KEY", "ab#cd", env)
+
+    _dotenv.cache_clear()
+    try:
+        assert _dotenv(env)["OCTOPRINT_API_KEY"] == "ab#cd"
+    finally:
+        _dotenv.cache_clear()
+
+
+def test_the_cache_is_cleared_so_the_new_value_is_readable(tmp_path, monkeypatch):
+    """_dotenv is lru_cached — without a clear, a running process keeps the old value."""
+    env = tmp_path / ".env"
+    env.write_text("NTFY_TOPIC=old\n", encoding="utf-8")
+    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+    monkeypatch.delenv("NTFY_TOPIC", raising=False)
+
+    _dotenv.cache_clear()
+    assert env_value("NTFY_TOPIC") == "old"
+
+    write_env_value("NTFY_TOPIC", "new", env)
+    assert env_value("NTFY_TOPIC") == "new"
+
+
+# --------------------------------------------------------------------------- #
+# The setup wizard
+#
+# The property under test is restraint: it must not write to .env until a human
+# has confirmed a notification actually arrived on a phone. A wizard that reports
+# success on a 204 has not tested the thing that usually goes wrong — being
+# subscribed to the wrong topic.
+# --------------------------------------------------------------------------- #
+
+from types import SimpleNamespace
+
+from vtp import notify as notify_module
+
+
+@pytest.fixture
+def wizard(tmp_path, monkeypatch):
+    """Isolate .env and stub the network, returning a record of what was sent."""
+    env = tmp_path / ".env"
+    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "vtp.notify._send_test",
+        lambda server, topic: (sent.append((server, topic)), True)[1],
+    )
+    return SimpleNamespace(env=env, sent=sent)
+
+
+def _answers(monkeypatch, *replies):
+    queue = list(replies)
+    monkeypatch.setattr("builtins.input", lambda *_a: queue.pop(0))
+
+
+def test_a_generated_topic_is_not_guessable():
+    topic = notify_module.generate_topic()
+    assert topic.startswith("vtp-")
+    assert len(topic) > 14
+    assert topic != notify_module.generate_topic()
+
+
+def test_setup_writes_env_only_after_the_phone_buzzed(wizard, monkeypatch):
+    _answers(monkeypatch, "y", "y")  # subscribed? yes.  buzzed? yes.
+    assert notify_module.setup() == 0
+
+    assert "NTFY_TOPIC=vtp-" in wizard.env.read_text(encoding="utf-8")
+    assert len(wizard.sent) == 1
+
+
+def test_setup_writes_nothing_when_the_phone_did_not_buzz(wizard, monkeypatch):
+    """The failure this exists to catch: subscribed to the wrong topic."""
+    _answers(monkeypatch, "y", "n")  # subscribed? yes.  buzzed? no.
+    assert notify_module.setup() == 1
+
+    assert not wizard.env.exists(), "half-configured is worse than unconfigured"
+
+
+def test_setup_writes_nothing_if_the_person_backs_out(wizard, monkeypatch):
+    _answers(monkeypatch, "n")
+    assert notify_module.setup() == 1
+
+    assert not wizard.env.exists()
+    assert wizard.sent == []
+
+
+def test_setup_writes_nothing_when_the_send_fails(wizard, monkeypatch):
+    monkeypatch.setattr("vtp.notify._send_test", lambda *a: False)
+    _answers(monkeypatch, "y")
+    assert notify_module.setup() == 1
+
+    assert not wizard.env.exists()
+
+
+def test_an_explicit_topic_is_used_verbatim(wizard, monkeypatch):
+    _answers(monkeypatch, "y", "y")
+    assert notify_module.setup("vtp-chosen-by-hand") == 0
+
+    assert "NTFY_TOPIC=vtp-chosen-by-hand" in wizard.env.read_text(encoding="utf-8")
+    assert wizard.sent[0][1] == "vtp-chosen-by-hand"
+
+
+def test_an_existing_topic_is_offered_for_reuse(tmp_path, monkeypatch):
+    """Regenerating silently would unsubscribe somebody's phone without telling them."""
+    env = tmp_path / ".env"
+    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+    monkeypatch.setattr(
+        "vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", "vtp-already-set")
+    )
+    sent = []
+    monkeypatch.setattr(
+        "vtp.notify._send_test", lambda s, t: (sent.append(t), True)[1]
+    )
+
+    _answers(monkeypatch, "n", "y", "y")  # regenerate? no.  subscribed? yes.  buzzed? yes.
+    assert notify_module.setup() == 0
+    assert sent == ["vtp-already-set"]
+
+
+def test_check_reports_a_missing_topic_and_names_the_fix(monkeypatch, capsys):
+    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    assert notify_module.check() == 2
+    assert "--setup" in capsys.readouterr().out
+
+
+def test_the_daemon_points_at_setup_rather_than_explaining_by_hand(monkeypatch, caplog):
+    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    with caplog.at_level("ERROR"):
+        assert notify_module.main([]) == 2
+    assert "--setup" in caplog.text

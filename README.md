@@ -185,9 +185,17 @@ dimension has something to check against.
 
 ## Notifications
 
-`python -m vtp.notify` watches the printer and pushes to [ntfy](https://ntfy.sh) when a
-print starts, finishes, is cancelled, or the machine drops off the serial link mid-print.
-Set `NTFY_TOPIC` in `.env` and subscribe to the same topic in the ntfy app.
+```bash
+python -m vtp.notify --setup     # one command, start to finish
+```
+
+Generates a private topic, walks you through subscribing in the
+[ntfy](https://ntfy.sh) app (free, no account), sends a real test notification, and
+writes `.env` only once you confirm your phone actually buzzed — so you never end up
+half-configured and finding out after a failed print. `--check` re-tests later.
+
+You then get a push when a print starts, finishes, is cancelled, or the machine drops
+off the serial link mid-print.
 
 It runs as **its own process**, deliberately — not inside the MCP server. An MCP server
 is spawned by your editor and dies with the session, so a poller living in it would only

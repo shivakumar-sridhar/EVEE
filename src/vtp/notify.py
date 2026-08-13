@@ -26,7 +26,9 @@ watcher that dies because it could not report is worse than no watcher.
 
 from __future__ import annotations
 
+import argparse
 import logging
+import secrets
 import signal
 import sys
 import time
@@ -39,6 +41,7 @@ from vtp.config import (
     ntfy_settings,
     octoprint_settings,
     printer_timeout,
+    write_env_value,
 )
 from vtp.printer import JobStatus, OctoPrintClient, PrinterError, PrinterStatus, _audit
 
@@ -340,8 +343,145 @@ class Watcher:
             time.sleep(printing_interval if self.seen.printing else idle_interval)
 
 
+def generate_topic() -> str:
+    """A topic nobody will guess.
+
+    On a public ntfy server the topic **is** the credential — anyone who knows the
+    string can read your notifications and publish fake ones to you. Generating it
+    removes the failure mode where somebody picks ``shiv-printer`` because it is easy to
+    remember, and with it the chance that a stranger learns when your house is empty
+    because a print just finished.
+    """
+    return f"vtp-{secrets.token_hex(6)}"
+
+
+def _ask(question: str, default: bool = True) -> bool:
+    """A yes/no question. Treats a bare Enter as the default and EOF as 'no'."""
+    hint = "[Y/n]" if default else "[y/N]"
+    try:
+        answer = input(f"{question} {hint} ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if not answer:
+        return default
+    return answer in {"y", "yes"}
+
+
+def _send_test(server: str, topic: str) -> bool:
+    """Send a real notification through the same path the daemon uses."""
+    event = PrintEvent(
+        kind="finished",
+        title="voice-to-print is connected",
+        message=(
+            "If you can read this, notifications are working. You'll get one of these "
+            "when a print finishes, is cancelled, or the printer drops offline."
+        ),
+        priority=3,
+        tags="white_check_mark",
+    )
+    return Notifier(server, topic).send(event)
+
+
+def setup(argv_topic: str | None = None) -> int:
+    """Walk somebody from nothing to a phone that buzzes.
+
+    Deliberately refuses to write anything until a notification has **actually been
+    delivered**. A setup command that reports success because an HTTP request returned
+    204 has taught the user nothing — the failure mode it needs to catch is "subscribed
+    to the wrong topic", and only a human looking at a phone can catch that.
+    """
+    server, existing = ntfy_settings()
+
+    print("\n  Push notifications for print progress.\n")
+
+    topic = argv_topic or existing
+    if existing and not argv_topic:
+        print(f"  .env already has a topic: {existing}")
+        if not _ask("  Generate a new one?", default=False):
+            print("  Keeping it.\n")
+        else:
+            topic = generate_topic()
+    if not topic:
+        topic = generate_topic()
+
+    if topic != existing:
+        print(f"\n  Your topic:  {topic}")
+        print("  Keep it private — on a public server, anyone who knows it can read")
+        print("  your notifications and send you fake ones.\n")
+
+    print("  1. Install the 'ntfy' app  (Android / iOS, free, no account needed)")
+    print("  2. Tap + to subscribe, and either:")
+    print(f"       - type the topic:  {topic}")
+    print(f"       - or open on your phone:  {server}/{topic}\n")
+
+    if not _ask("  Subscribed and ready for a test?"):
+        print("\n  Stopped. Nothing was written. Run this again when you're ready.\n")
+        return 1
+
+    print("\n  Sending a test notification...")
+    if not _send_test(server, topic):
+        print(
+            f"\n  Could not reach {server}. Check the network and try again.\n"
+            f"  Nothing was written to .env.\n"
+        )
+        return 1
+
+    if not _ask("  Did your phone buzz?"):
+        print(
+            "\n  Then the subscription doesn't match. The usual cause is a typo in the\n"
+            f"  topic — it must be exactly:  {topic}\n"
+            "  Nothing was written to .env, so nothing is half-configured.\n"
+        )
+        return 1
+
+    write_env_value("NTFY_TOPIC", topic)
+    print("\n  Saved to .env  (your other settings were left untouched;")
+    print("  the previous file is at .env.bak)\n")
+
+    print("  To have it watch every print, run it in the background:\n")
+    print("    cp packaging/vtp-notify.service ~/.config/systemd/user/")
+    print("    systemctl --user daemon-reload")
+    print("    systemctl --user enable --now vtp-notify")
+    print("    loginctl enable-linger $USER      # keep running when logged out\n")
+    print("  Or just run it in a terminal:  python -m vtp.notify\n")
+    return 0
+
+
+def check() -> int:
+    """Re-test an existing configuration without starting the daemon."""
+    server, topic = ntfy_settings()
+    if not topic:
+        print("\n  No NTFY_TOPIC in .env. Run:  python -m vtp.notify --setup\n")
+        return 2
+
+    print(f"\n  Sending a test to {server}/{topic} ...")
+    if not _send_test(server, topic):
+        print("  Failed to send. Check the network.\n")
+        return 1
+    print("  Sent. If your phone didn't buzz, re-run with --setup.\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m vtp.notify``."""
+    parser = argparse.ArgumentParser(
+        prog="vtp.notify", description="Watch the printer and push notifications."
+    )
+    parser.add_argument(
+        "--setup", action="store_true", help="guided first-time setup (do this first)"
+    )
+    parser.add_argument(
+        "--check", action="store_true", help="send one test notification and exit"
+    )
+    parser.add_argument("--topic", help="use this topic instead of generating one")
+    args = parser.parse_args(argv)
+
+    if args.setup:
+        return setup(args.topic)
+    if args.check:
+        return check()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -351,9 +491,8 @@ def main(argv: list[str] | None = None) -> int:
     server, topic = ntfy_settings()
     if not topic:
         log.error(
-            "NTFY_TOPIC is not set in .env, so there is nowhere to send. Pick a long "
-            "random topic name — anyone who knows it can read your notifications — "
-            "and subscribe to it in the ntfy app."
+            "No NTFY_TOPIC in .env, so there is nowhere to send. "
+            "Run:  python -m vtp.notify --setup"
         )
         return 2
 

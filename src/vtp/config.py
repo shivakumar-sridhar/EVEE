@@ -202,6 +202,64 @@ def _dotenv(path: Path | None = None) -> dict[str, str]:
     return values
 
 
+def write_env_value(key: str, value: str, path: Path | None = None) -> Path:
+    """Set one key in ``.env``, leaving every other byte of the file alone.
+
+    This edits a file that holds a live printer API key, so the rules are strict:
+
+    - **Every other line survives verbatim** — comments, blank lines, ordering. The file
+      is hand-maintained and the comments in it are the only documentation some people
+      will read.
+    - **An existing key is replaced in place, never appended.** :func:`_dotenv` takes
+      the *last* occurrence of a key, so appending a second line would leave the old
+      value silently winning for anyone who read the top of the file. Duplicates found
+      along the way are dropped for the same reason.
+    - **The previous file is copied to ``.env.bak`` first.** Rewriting somebody's
+      credentials file with no undo is not a thing to do.
+    - **Nothing is logged or printed.** Callers hold secrets.
+
+    Returns the path written.
+    """
+    target = Path(path) if path else ENV_PATH
+
+    if target.is_file():
+        original = target.read_text(encoding="utf-8")
+        # Written before the change, so an interrupted run still leaves the original.
+        target.with_suffix(target.suffix + ".bak").write_text(original, encoding="utf-8")
+        lines = original.splitlines()
+    else:
+        # A fresh checkout: start from the documented template when there is one, so the
+        # new file arrives with its comments rather than as a bare key=value.
+        example = target.parent / ".env.example"
+        lines = (
+            example.read_text(encoding="utf-8").splitlines() if example.is_file() else []
+        )
+
+    new_line = f"{key}={value}"
+    written = False
+    kept: list[str] = []
+
+    for line in lines:
+        stripped = line.strip().removeprefix("export ").lstrip()
+        name = stripped.partition("=")[0].strip()
+        if stripped and not stripped.startswith("#") and name == key:
+            if not written:
+                kept.append(new_line)
+                written = True
+            # else: a duplicate of the same key — drop it, since the last one would win.
+            continue
+        kept.append(line)
+
+    if not written:
+        kept.append(new_line)
+
+    target.write_text("\n".join(kept).rstrip("\n") + "\n", encoding="utf-8")
+
+    # _dotenv is lru_cached, so a long-lived process would keep serving the old value.
+    _dotenv.cache_clear()
+    return target
+
+
 def env_value(name: str) -> str | None:
     """A setting from the real environment, else from ``.env``, else None.
 
