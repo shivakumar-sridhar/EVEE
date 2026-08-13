@@ -143,7 +143,10 @@ Done:
 
 - **Phase 2 — complete.** `src/vtp/slicer.py` + the `slice_part` MCP tool. Acceptance
   met: the Phase 1 body slices to 55 layers, 4.25 g, 30m 44s — matching the physically
-  verified print exactly.
+  verified print exactly. **Re-checked 2026-08-13** after the start-G-code rewrite:
+  still 55 layers, now 4.28 g / 30m 16s. The geometry did not move — the extra 0.03 g
+  is the fatter prime line and the shorter time is the deleted park-and-travel. Layers
+  are the invariant to watch; grams shift when `start_gcode` extrudes more.
 - **Gate 1 opens a real window.** `src/vtp/viewer.py` opens the review 3MF in
   PrusaSlicer's GUI after `design_part`. One window, replaced on each iteration.
   Previews are still written and are still the fallback when no display exists.
@@ -425,6 +428,55 @@ at ~60–90s per print. **Owner chose to keep the warm schedule and fix the geom
 and was signed off — and still had this defect. Its first layer simply happened to survive
 the blob. Watch the *first two minutes* specifically: the blob should appear at the rear of
 the prime lane and stay there.
+
+**The drool, fixed on the fourth attempt — 2026-08-13. Everything above about
+`start_gcode` is superseded by this.** Three fixes shipped before this one, each reasoned
+from a theory about the G-code, each cancelled a print: `Z50`→`Z2.0` (stopped strings,
+started welding a blob), park-at-`Y150`-and-purge (blob still stuck), cold nozzle plus
+stored mesh (removed ~187s of soak, blob still stuck).
+
+The observation that ended it came from the owner watching the machine: **filament starts
+drooling at about 190C, the target was 210, and the lag across that gap is the drool.**
+Not the probe, not the park position, not the soak.
+
+`output/BNO_Case.gcode` — the clean Cura print of this same part, in `output/` the whole
+time — differs in exactly the ways that matter:
+
+| | Cura | Ours, before |
+|---|---|---|
+| First-layer temperature | **200C** | 210C |
+| Nozzle while heating | **at the prime start, Z0.28** | parked away, Z2.0 |
+| Moves between `M109` and first extrusion | **0** | 5 |
+| Purge | 30mm over 160mm of line | 24mm, thinner per mm |
+
+Cura's trick is to be *already in position, at print height*, when the heat arrives. Ooze
+is pinned to the plate exactly where the line starts, and the next command draws a fat
+purge straight through it. There is no travel in which to collect a blob because there is
+no travel. Fixes 1–3 all *added* movement between "hot" and "extruding"; this change
+deletes all of it. Gone: the `Y150` park, the deliberate purge, the lift-and-travel, the
+one-way-line rule, the `X10 Y10` wipe. Kept, because they match Cura: `M104 S0` through
+homing, and the stored mesh.
+
+The translation from Cura is not literal. `E15` twice rather than `E15`/`E30`, because
+this profile runs `M83` relative where Cura is absolute — same 30mm total. `X2.0/2.3`
+rather than Cura's `X-3/-2`, because `bed_shape` starts at 0 here and negative X is off
+the printable area. `G1 E1` to restore rather than `G1 E0`, again relative.
+
+`first_layer_temperature` is **200**, not a tuning knob: 10C of overshoot past the drool
+threshold instead of 20, and 200 is what printed this part cleanly. `temperature` (205,
+later layers) is untouched — drool only matters before the first extrusion.
+
+**The method note, which is the durable part.** Every one of the three failures was
+designed from a theory while a working example of the same part, on the same machine, sat
+unread in `output/`. The note "read the working artefact first" was written after the
+second failure and then not followed: the artefact was opened for its levelling line and
+neither its structure nor its temperature was looked at. **Read the whole of it.**
+
+Re-sliced across the change: case body still 55 layers, 4.28 g (was 4.25 — the fatter
+prime line), 30m 16s (was 30m 44s — the deleted park-and-travel). `tests/test_profile.py`
+was rewritten with it; three tests encoding the abandoned theories were deleted rather
+than kept, since leaving them would pin a design that failed four times. **The profile is
+not physically verified in this form** — it has not yet printed.
 
 **PrusaSlicer's time estimate is accurate; OctoPrint's mid-print estimate is not.**
 Worth writing down because it caused a false alarm. At 15% the web UI claimed 1h 41m
