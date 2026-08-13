@@ -515,6 +515,10 @@ def wizard(tmp_path, monkeypatch):
     monkeypatch.setattr("vtp.config.ENV_PATH", env)
     monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
 
+    # These tests drive the interactive wizard, so they must claim a terminal —
+    # pytest's stdin is a pipe, which the wizard correctly refuses to prompt into.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(
         "vtp.notify._send_test",
@@ -582,6 +586,7 @@ def test_an_existing_topic_is_offered_for_reuse(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", "vtp-already-set")
     )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     sent = []
     monkeypatch.setattr(
         "vtp.notify._send_test", lambda s, t: (sent.append(t), True)[1]
@@ -603,3 +608,51 @@ def test_the_daemon_points_at_setup_rather_than_explaining_by_hand(monkeypatch, 
     with caplog.at_level("ERROR"):
         assert notify_module.main([]) == 2
     assert "--setup" in caplog.text
+
+
+def test_a_pipe_is_not_mistaken_for_a_refusal(monkeypatch, capsys, tmp_path):
+    """Without a terminal, input() raises EOFError immediately and _ask reads it as
+    "no" — so the wizard used to end with "Stopped. Nothing was written.", which is the
+    right action attached to a misleading reason. It has to say the terminal is missing
+    and give a path that works anyway."""
+    monkeypatch.setattr("vtp.config.ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    assert notify_module.setup() == 2
+
+    out = capsys.readouterr().out
+    assert "not one" in out            # names the actual problem
+    assert "--check --topic" in out    # and a way through it
+    assert "--save-topic" in out
+    assert not (tmp_path / ".env").exists()
+
+
+def test_check_can_test_a_topic_before_it_is_saved(monkeypatch, capsys):
+    """The two-step path needs to test a candidate without committing to it."""
+    sent = []
+    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr(
+        "vtp.notify._send_test", lambda s, t: (sent.append(t), True)[1]
+    )
+
+    assert notify_module.check("vtp-candidate") == 0
+    assert sent == ["vtp-candidate"]
+
+
+def test_save_topic_writes_only_the_one_key(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("OCTOPRINT_API_KEY=SECRET\n", encoding="utf-8")
+    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+
+    assert notify_module.save_topic("vtp-confirmed") == 0
+    text = env.read_text(encoding="utf-8")
+
+    assert "NTFY_TOPIC=vtp-confirmed" in text
+    assert "OCTOPRINT_API_KEY=SECRET" in text
+
+
+def test_save_topic_refuses_an_empty_topic(tmp_path, monkeypatch):
+    monkeypatch.setattr("vtp.config.ENV_PATH", tmp_path / ".env")
+    assert notify_module.save_topic("   ") == 2
+    assert not (tmp_path / ".env").exists()

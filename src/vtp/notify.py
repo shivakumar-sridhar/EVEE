@@ -368,6 +368,19 @@ def _ask(question: str, default: bool = True) -> bool:
     return answer in {"y", "yes"}
 
 
+def _interactive() -> bool:
+    """Whether there is a human at a keyboard to answer questions.
+
+    Without this the wizard is indistinguishable from a person declining: ``input()``
+    raises ``EOFError`` immediately when stdin is a pipe, :func:`_ask` reads that as
+    "no", and the run ends with "Stopped. Nothing was written." — which is the correct
+    *action* attached to a misleading *reason*. Run through an agent's shell, a CI job,
+    or ``cmd | python -m vtp.notify --setup``, it looks like a refusal rather than a
+    missing terminal.
+    """
+    return sys.stdin.isatty()
+
+
 def _send_test(server: str, topic: str) -> bool:
     """Send a real notification through the same path the daemon uses."""
     event = PrintEvent(
@@ -392,6 +405,21 @@ def setup(argv_topic: str | None = None) -> int:
     to the wrong topic", and only a human looking at a phone can catch that.
     """
     server, existing = ntfy_settings()
+
+    if not _interactive():
+        topic = argv_topic or existing or generate_topic()
+        print(
+            f"\n  This needs a terminal it can ask questions in, and stdin is not one.\n"
+            f"  Run it directly in a shell:\n\n"
+            f"      python -m vtp.notify --setup\n\n"
+            f"  Or do it in two steps, which works anywhere:\n\n"
+            f"      1. subscribe your phone to:  {topic}\n"
+            f"         ({server}/{topic})\n"
+            f"      2. python -m vtp.notify --check --topic {topic}\n"
+            f"      3. once your phone buzzes:\n"
+            f"         python -m vtp.notify --save-topic {topic}\n"
+        )
+        return 2
 
     print("\n  Push notifications for print progress.\n")
 
@@ -448,9 +476,14 @@ def setup(argv_topic: str | None = None) -> int:
     return 0
 
 
-def check() -> int:
-    """Re-test an existing configuration without starting the daemon."""
-    server, topic = ntfy_settings()
+def check(topic: str | None = None) -> int:
+    """Send one test notification. ``topic`` overrides whatever is in ``.env``.
+
+    The override is what makes the two-step, no-terminal path work: test a candidate
+    topic before committing it, then save it separately once the phone has buzzed.
+    """
+    server, configured = ntfy_settings()
+    topic = topic or configured
     if not topic:
         print("\n  No NTFY_TOPIC in .env. Run:  python -m vtp.notify --setup\n")
         return 2
@@ -459,7 +492,25 @@ def check() -> int:
     if not _send_test(server, topic):
         print("  Failed to send. Check the network.\n")
         return 1
-    print("  Sent. If your phone didn't buzz, re-run with --setup.\n")
+    print("  Sent. If your phone didn't buzz, the subscription doesn't match.\n")
+    return 0
+
+
+def save_topic(topic: str) -> int:
+    """Write a topic to ``.env``, for the two-step path where no terminal exists.
+
+    Separate from :func:`check` on purpose. Running this is the human's confirmation
+    that their phone actually buzzed — the same gate the interactive wizard asks for,
+    just expressed as "you chose to run the second command".
+    """
+    if not topic.strip():
+        print("\n  No topic given.\n")
+        return 2
+    write_env_value("NTFY_TOPIC", topic.strip())
+    print(
+        f"\n  Saved {topic.strip()} to .env  (other settings untouched; "
+        f"previous file at .env.bak)\n"
+    )
     return 0
 
 
@@ -475,12 +526,19 @@ def main(argv: list[str] | None = None) -> int:
         "--check", action="store_true", help="send one test notification and exit"
     )
     parser.add_argument("--topic", help="use this topic instead of generating one")
+    parser.add_argument(
+        "--save-topic",
+        metavar="TOPIC",
+        help="write a topic to .env (use after --check made your phone buzz)",
+    )
     args = parser.parse_args(argv)
 
+    if args.save_topic:
+        return save_topic(args.save_topic)
     if args.setup:
         return setup(args.topic)
     if args.check:
-        return check()
+        return check(args.topic)
 
     logging.basicConfig(
         level=logging.INFO,
