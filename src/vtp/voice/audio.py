@@ -208,6 +208,12 @@ def _record_with_arecord(prompt: str, rate: int, max_seconds: float) -> Recordin
 
         try:
             input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            # No terminal to press Enter in, or the person gave up. Both mean "no
+            # utterance", not "crash". `finally` alone would let this escape and take
+            # the whole conversation down with a traceback.
+            log.debug("capture interrupted before Enter")
+            return None
         finally:
             process.terminate()
             try:

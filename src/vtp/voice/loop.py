@@ -21,6 +21,7 @@ There is no flag here to turn it off, and adding one would be the bug.
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -134,6 +135,17 @@ class VoiceLoop:
         from claude_agent_sdk import ClaudeSDKClient
 
         from vtp.voice.session import build_options
+
+        if self.listen and not sys.stdin.isatty():
+            # Push-to-talk needs somewhere to press Enter. Piped or run from an agent's
+            # shell there is no terminal, and trying to record anyway ends in an
+            # EOFError from the middle of the capture. Typed input still works from a
+            # pipe, so degrade to it and say why.
+            print(
+                "  No terminal to press Enter in, so push-to-talk is off.\n"
+                "  Reading typed input instead — run this in a real terminal to speak.\n"
+            )
+            self.listen = False
 
         if self.listen:
             usable, reason = microphone_available()

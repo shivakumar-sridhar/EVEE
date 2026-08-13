@@ -469,3 +469,40 @@ def test_arecord_is_used_when_portaudio_is_missing(monkeypatch):
     usable, reason = microphone_available()
     assert usable is True
     assert "arecord" in reason
+
+
+def test_capture_interrupted_before_enter_returns_none_not_a_traceback(monkeypatch):
+    """Regression, and it was on this machine's live path.
+
+    `_record_with_arecord` had input() inside try/finally with no except, so with no
+    terminal the EOFError escaped and took the whole conversation down mid-capture.
+    "No utterance" is not "crash"."""
+    from vtp.voice import audio
+
+    class FakeProc:
+        def terminate(self): ...
+        def wait(self, timeout=None): ...
+        def kill(self): ...
+
+    monkeypatch.setattr(audio.subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(
+        "builtins.input", lambda *_a: (_ for _ in ()).throw(EOFError("no tty"))
+    )
+
+    assert audio._record_with_arecord("prompt", 16000, 30.0) is None
+
+
+def test_a_keyboard_interrupt_during_capture_is_also_not_a_crash(monkeypatch):
+    from vtp.voice import audio
+
+    class FakeProc:
+        def terminate(self): ...
+        def wait(self, timeout=None): ...
+        def kill(self): ...
+
+    monkeypatch.setattr(audio.subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(
+        "builtins.input", lambda *_a: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+
+    assert audio._record_with_arecord("prompt", 16000, 30.0) is None
