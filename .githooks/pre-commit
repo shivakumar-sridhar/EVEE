@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# Refuse to commit credentials.
+#
+# This exists because a rule is not a mechanism. On 2026-08-12 a `git add -A` swept
+# `.env.bak` — holding a live OctoPrint application key — into a commit about something
+# else entirely, and pushed it to a public repo. `.gitignore` named the literal file
+# `.env` and nothing else, so the backup copy walked straight past it. Untracking cannot
+# reach a pushed commit: the key had to be revoked.
+#
+# Enable it once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# Two independent checks, because either alone fails open:
+#
+#   1. NAMES  — a file whose name says "secret", regardless of contents. Catches a
+#               brand-new `.env.local` that no ignore rule has heard of yet.
+#   2. VALUES — a credential-shaped assignment inside any staged file. Catches a key
+#               pasted into a config, a test fixture, or a README.
+#
+# Bypass with `git commit --no-verify` if you are certain. Being certain is the part
+# that went wrong last time.
+
+set -uo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+note() {
+    if [ "$fail" -eq 0 ]; then
+        printf '\n  COMMIT BLOCKED — this looks like a credential.\n\n'
+    fi
+    fail=1
+    printf '    %s\n' "$1"
+}
+
+# -- 1. names ------------------------------------------------------------------ #
+# .env.example is the documented template and is meant to be tracked. It is allowed
+# through by name here, but its *contents* still go through check 2 below — a template
+# with a real key pasted into it is exactly the mistake worth catching.
+while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    base=$(basename "$path")
+    case "$base" in
+        .env.example|*.example|*.sample) continue ;;
+    esac
+    case "$base" in
+        .env|.env.*|*.bak|*.pem|*.key|*.p12|*.pfx|id_rsa|id_ed25519|*.keystore)
+            note "$path — the name says credential" ;;
+        *credential*|*secret*)
+            note "$path — the name says credential" ;;
+    esac
+done <<< "$staged"
+
+# -- 2. values ----------------------------------------------------------------- #
+# A NAME=VALUE where the name sounds like a credential and the value is long enough to
+# be one. The >=16 length is what keeps `API_KEY=` (empty, in a template) and
+# `password = "changeme"` from tripping it.
+pattern='(API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS_?KEY|PRIVATE_?KEY)[A-Z_]*["'"'"']?[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9/+_-]{16,}'
+
+while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    # Only added lines, so an existing file is not re-flagged forever.
+    hits=$(git diff --cached -U0 -- "$path" \
+           | grep -E '^\+' \
+           | grep -Ei "$pattern" \
+           | head -3) || true
+    if [ -n "$hits" ]; then
+        note "$path — a credential-shaped value on an added line:"
+        printf '        %s\n' "$(printf '%s' "$hits" | cut -c1-72 | head -3)"
+    fi
+done <<< "$staged"
+
+# -- private key blocks, which have no NAME= at all ---------------------------- #
+if git diff --cached -U0 | grep -qE '^\+.*BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY'; then
+    note "a PRIVATE KEY block is being added"
+fi
+
+if [ "$fail" -ne 0 ]; then
+    cat <<'EOF'
+
+  If it is a real credential:
+      git restore --staged <path>        # unstage it
+      then add the whole family to .gitignore, not just this one name
+
+  If it is a false positive:
+      git commit --no-verify
+
+EOF
+    exit 1
+fi
+
+exit 0

@@ -85,7 +85,20 @@ git clone git@github.com:shivakumar-sridhar/EVEE.git
 cd EVEE
 uv sync
 uv run pytest
+git config core.hooksPath .githooks    # refuse to commit credentials
 ```
+
+That last line is worth the two seconds. `.githooks/pre-commit` blocks a commit that
+stages a credential — by filename (`.env*`, `*.bak`, `*.pem`, …) and by content, meaning
+a key pasted into a file whose name looks perfectly innocent is caught too. Git does not
+track `.git/hooks`, so `core.hooksPath` is how a hook survives a clone; without that line
+the hook is inert.
+
+It exists because this repo pushed a live OctoPrint key once, in a `.env.bak` that a
+`git add -A` swept into a commit about something else entirely. `.gitignore` named the
+literal file `.env` and nothing else, so the backup walked straight past it. Untracking
+cannot reach a pushed commit — the key had to be revoked. A rule would not have stopped
+that; a hook does.
 
 `build123d` pulls in OpenCascade via prebuilt wheels — no source build, but it is a
 large download (~400MB).
