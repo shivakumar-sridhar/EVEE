@@ -6,7 +6,7 @@ and load it with ``M420 S1`` instead. This module owns the one question that mak
 that safe to do: **has a mesh actually been stored, and is it recent enough to use?**
 
 **The default is always the probe.** No state file, an unreadable one, a stale one —
-every uncertain case answers "not usable", and :mod:`vtp.slicer` leaves the profile's
+every uncertain case answers "not usable", and :mod:`evee.slicer` leaves the profile's
 ``G29`` alone. That direction matters because the failure is silent: ``M420 S1``
 against a mesh Marlin does not have prints on a flat plane and warns only on the
 serial console, which nobody is watching. Slower and correct beats faster and wrong.
@@ -17,9 +17,9 @@ update, an ``M502``, or a rehomed Z can invalidate the mesh while this file stil
 it was stored yesterday. That is why the age limit exists and why the tool that writes
 this file tells the human to re-run it after touching the machine.
 
-**"The last print failed" is only as good as the daemon.** :func:`vtp.printer._audit`
+**"The last print failed" is only as good as the daemon.** :func:`evee.printer._audit`
 records what this process *commands* — a start, a cancel. Whether a print then finished
-or failed is observed by :mod:`vtp.notify`, which appends ``print_finished`` and
+or failed is observed by :mod:`evee.notify`, which appends ``print_finished`` and
 ``print_failed``. With that daemon running the question has a real answer. Without it
 the log holds intent only, a lone ``start_print`` is ambiguous between finished and
 silently failed, and this reads it as "not bad news" on purpose. Staying quiet on
@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from vtp.config import OUTPUT_DIR, mesh_max_age_days
+from evee.config import OUTPUT_DIR, mesh_max_age_days
 
 __all__ = ["MESH_STATE", "MeshState", "mesh_state", "record_mesh_stored"]
 
@@ -49,7 +49,7 @@ class MeshState:
     stored_at: datetime | None
     printer: str | None
     age_days: float | None
-    #: May :mod:`vtp.slicer` swap ``G29`` for ``M420 S1``?
+    #: May :mod:`evee.slicer` swap ``G29`` for ``M420 S1``?
     usable: bool
     #: Why, in a sentence that can be read to a human.
     reason: str
@@ -81,19 +81,19 @@ def _audit_path() -> Path:
     """The print log, resolved late.
 
     Imported inside the function on purpose. ``tests/conftest.py`` redirects
-    ``vtp.printer.AUDIT_LOG`` to a scratch file, and a module-level ``from vtp.printer
+    ``evee.printer.AUDIT_LOG`` to a scratch file, and a module-level ``from evee.printer
     import AUDIT_LOG`` would bind the real path at import time and read the real
     machine's log right past that patch — the same hazard the printer module
-    documents for ``octoprint_settings``. It also keeps :mod:`vtp.printer` free to
+    documents for ``octoprint_settings``. It also keeps :mod:`evee.printer` free to
     import this module at load time.
     """
-    from vtp import printer
+    from evee import printer
 
     return printer.AUDIT_LOG
 
 
 #: Events that say how a print turned out, mapped to "is this bad news".
-#: ``print_finished`` / ``print_failed`` come from the :mod:`vtp.notify` daemon, the
+#: ``print_finished`` / ``print_failed`` come from the :mod:`evee.notify` daemon, the
 #: only thing that observes an *outcome*. ``start_print`` and ``cancel_print`` are
 #: written by this process when it issues a command, so they record intent. Both kinds
 #: share the log; the newest one wins.

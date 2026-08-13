@@ -7,9 +7,9 @@ import trimesh
 from build123d import Compound, Mesher
 from pydantic import ValidationError
 
-from vtp.cad import PART_GAP, arrange_along_x, design, render_preview
-from vtp.config import bed_violations
-from vtp.templates import TEMPLATE_REGISTRY, UnknownTemplateError, get_template
+from evee.cad import PART_GAP, arrange_along_x, design, render_preview
+from evee.config import bed_violations
+from evee.templates import TEMPLATE_REGISTRY, UnknownTemplateError, get_template
 
 ACCEPTANCE = dict(outer_l=50.0, outer_w=40.0, outer_h=20.0)
 

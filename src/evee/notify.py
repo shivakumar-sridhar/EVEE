@@ -5,16 +5,16 @@ An MCP server is spawned by the editor and dies with the session, so a poller li
 inside it would notify you only while you were sitting at the machine with the agent
 open — precisely when you do not need telling. Run this as a daemon:
 
-    python -m vtp.notify            # foreground, Ctrl-C to stop
-    systemctl --user start vtp-notify
+    python -m evee.notify            # foreground, Ctrl-C to stop
+    systemctl --user start evee-notify
 
-It shares :class:`vtp.printer.OctoPrintClient` with the server and issues only reads.
+It shares :class:`evee.printer.OctoPrintClient` with the server and issues only reads.
 It cannot start, stop or alter a print, and it takes no arguments that could make it
 do so. The worst a bug here can do is send you a wrong notification.
 
 **It is also the first thing in this repo that records how a print ended.** Until now
 ``print_log.jsonl`` held starts and cancels — what was *commanded*, never what
-happened, which is why :mod:`vtp.calibration` could only treat "the last print was
+happened, which is why :mod:`evee.calibration` could only treat "the last print was
 cancelled" as a proxy. This appends ``print_finished`` and ``print_failed``, so that
 question gets a real answer whenever the daemon was running. When it was not, the log
 simply lacks those events and the old proxy behaviour stands.
@@ -36,18 +36,18 @@ from dataclasses import dataclass
 
 import httpx2
 
-from vtp.config import (
+from evee.config import (
     notify_settings,
     ntfy_settings,
     octoprint_settings,
     printer_timeout,
     write_env_value,
 )
-from vtp.printer import JobStatus, OctoPrintClient, PrinterError, PrinterStatus, _audit
+from evee.printer import JobStatus, OctoPrintClient, PrinterError, PrinterStatus, _audit
 
 __all__ = ["PrintEvent", "Watcher", "main"]
 
-log = logging.getLogger("vtp.notify")
+log = logging.getLogger("evee.notify")
 
 #: Below this, a job that stopped did not finish — it was cancelled or it failed.
 #: OctoPrint reports completion as a percentage of the file, so a genuine finish lands
@@ -352,7 +352,7 @@ def generate_topic() -> str:
     remember, and with it the chance that a stranger learns when your house is empty
     because a print just finished.
     """
-    return f"vtp-{secrets.token_hex(6)}"
+    return f"evee-{secrets.token_hex(6)}"
 
 
 def _ask(question: str, default: bool = True) -> bool:
@@ -375,7 +375,7 @@ def _interactive() -> bool:
     raises ``EOFError`` immediately when stdin is a pipe, :func:`_ask` reads that as
     "no", and the run ends with "Stopped. Nothing was written." — which is the correct
     *action* attached to a misleading *reason*. Run through an agent's shell, a CI job,
-    or ``cmd | python -m vtp.notify --setup``, it looks like a refusal rather than a
+    or ``cmd | python -m evee.notify --setup``, it looks like a refusal rather than a
     missing terminal.
     """
     return sys.stdin.isatty()
@@ -385,7 +385,7 @@ def _send_test(server: str, topic: str) -> bool:
     """Send a real notification through the same path the daemon uses."""
     event = PrintEvent(
         kind="finished",
-        title="voice-to-print is connected",
+        title="EVEE is connected",
         message=(
             "If you can read this, notifications are working. You'll get one of these "
             "when a print finishes, is cancelled, or the printer drops offline."
@@ -411,13 +411,13 @@ def setup(argv_topic: str | None = None) -> int:
         print(
             f"\n  This needs a terminal it can ask questions in, and stdin is not one.\n"
             f"  Run it directly in a shell:\n\n"
-            f"      python -m vtp.notify --setup\n\n"
+            f"      python -m evee.notify --setup\n\n"
             f"  Or do it in two steps, which works anywhere:\n\n"
             f"      1. subscribe your phone to:  {topic}\n"
             f"         ({server}/{topic})\n"
-            f"      2. python -m vtp.notify --check --topic {topic}\n"
+            f"      2. python -m evee.notify --check --topic {topic}\n"
             f"      3. once your phone buzzes:\n"
-            f"         python -m vtp.notify --save-topic {topic}\n"
+            f"         python -m evee.notify --save-topic {topic}\n"
         )
         return 2
 
@@ -468,11 +468,11 @@ def setup(argv_topic: str | None = None) -> int:
     print("  the previous file is at .env.bak)\n")
 
     print("  To have it watch every print, run it in the background:\n")
-    print("    cp packaging/vtp-notify.service ~/.config/systemd/user/")
+    print("    cp packaging/evee-notify.service ~/.config/systemd/user/")
     print("    systemctl --user daemon-reload")
-    print("    systemctl --user enable --now vtp-notify")
+    print("    systemctl --user enable --now evee-notify")
     print("    loginctl enable-linger $USER      # keep running when logged out\n")
-    print("  Or just run it in a terminal:  python -m vtp.notify\n")
+    print("  Or just run it in a terminal:  python -m evee.notify\n")
     return 0
 
 
@@ -485,7 +485,7 @@ def check(topic: str | None = None) -> int:
     server, configured = ntfy_settings()
     topic = topic or configured
     if not topic:
-        print("\n  No NTFY_TOPIC in .env. Run:  python -m vtp.notify --setup\n")
+        print("\n  No NTFY_TOPIC in .env. Run:  python -m evee.notify --setup\n")
         return 2
 
     print(f"\n  Sending a test to {server}/{topic} ...")
@@ -515,9 +515,9 @@ def save_topic(topic: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``python -m vtp.notify``."""
+    """Entry point for ``python -m evee.notify``."""
     parser = argparse.ArgumentParser(
-        prog="vtp.notify", description="Watch the printer and push notifications."
+        prog="evee.notify", description="Watch the printer and push notifications."
     )
     parser.add_argument(
         "--setup", action="store_true", help="guided first-time setup (do this first)"
@@ -550,7 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     if not topic:
         log.error(
             "No NTFY_TOPIC in .env, so there is nowhere to send. "
-            "Run:  python -m vtp.notify --setup"
+            "Run:  python -m evee.notify --setup"
         )
         return 2
 

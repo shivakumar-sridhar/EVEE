@@ -394,6 +394,39 @@ wheels = [
 ]
 
 [[package]]
+name = "evee"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "build123d" },
+    { name = "httpx2" },
+    { name = "matplotlib" },
+    { name = "mcp" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "trimesh" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "build123d", specifier = ">=0.9" },
+    { name = "httpx2", specifier = ">=2.0" },
+    { name = "matplotlib", specifier = ">=3.8" },
+    { name = "mcp", specifier = ">=2.0" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "trimesh", specifier = ">=4.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1639,39 +1672,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/03/18/ccce41535dee1be77
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/d5/68e6e9bca63c0badf67002890a46d3784c958de45b65e1275ec583ca1f06/uvicorn-0.52.1-py3-none-any.whl", hash = "sha256:e4403f9d93188cf9d1088e9f40e3acd12630e2df8675316704379a7fc20fff6a", size = 79859, upload-time = "2026-08-01T18:19:29.294Z" },
 ]
-
-[[package]]
-name = "vtp"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "build123d" },
-    { name = "httpx2" },
-    { name = "matplotlib" },
-    { name = "mcp" },
-    { name = "numpy" },
-    { name = "pydantic" },
-    { name = "trimesh" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "build123d", specifier = ">=0.9" },
-    { name = "httpx2", specifier = ">=2.0" },
-    { name = "matplotlib", specifier = ">=3.8" },
-    { name = "mcp", specifier = ">=2.0" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "trimesh", specifier = ">=4.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "wcwidth"

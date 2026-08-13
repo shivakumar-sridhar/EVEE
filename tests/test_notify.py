@@ -17,8 +17,8 @@ import json
 import httpx2
 import pytest
 
-from vtp.notify import Notifier, PrintEvent, Watcher, _Seen, classify, fetch_snapshot
-from vtp.printer import JobStatus, PrinterStatus, PrinterUnreachable
+from evee.notify import Notifier, PrintEvent, Watcher, _Seen, classify, fetch_snapshot
+from evee.printer import JobStatus, PrinterStatus, PrinterUnreachable
 
 
 def status(
@@ -152,7 +152,7 @@ class RecordingNotifier(Notifier):
 
 def test_a_finished_print_is_pushed_and_recorded(isolated_audit_log, monkeypatch):
     """The audit record is the half that outlives the notification."""
-    monkeypatch.setattr("vtp.notify.fetch_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr("evee.notify.fetch_snapshot", lambda *_a, **_k: None)
     client = FakeClient(
         [
             (status(printing=True), job(completion=99.0)),
@@ -197,7 +197,7 @@ def test_a_start_carries_no_snapshot(monkeypatch):
     """Nothing has been printed yet, so the picture is of an empty plate."""
     called = []
     monkeypatch.setattr(
-        "vtp.notify.fetch_snapshot", lambda *a, **k: called.append(1) or b"jpeg"
+        "evee.notify.fetch_snapshot", lambda *a, **k: called.append(1) or b"jpeg"
     )
     notifier = RecordingNotifier()
     watcher = Watcher(FakeClient([(status(printing=True), job(completion=0.0))]), notifier)
@@ -287,7 +287,7 @@ def test_a_missing_webcam_costs_nothing(monkeypatch):
 
 def test_a_recorded_failure_upgrades_the_recalibration_hint(isolated_audit_log):
     """Before the daemon, this could only be inferred from an explicit cancel."""
-    from vtp.calibration import _last_print_went_badly
+    from evee.calibration import _last_print_went_badly
 
     isolated_audit_log.write_text(
         json.dumps({"event": "start_print", "file": "a.gcode"})
@@ -300,7 +300,7 @@ def test_a_recorded_failure_upgrades_the_recalibration_hint(isolated_audit_log):
 
 
 def test_a_recorded_success_clears_it(isolated_audit_log):
-    from vtp.calibration import _last_print_went_badly
+    from evee.calibration import _last_print_went_badly
 
     isolated_audit_log.write_text(
         json.dumps({"event": "cancel_print"})
@@ -316,7 +316,7 @@ def test_a_recorded_success_clears_it(isolated_audit_log):
 
 def test_without_the_daemon_a_bare_start_is_not_treated_as_failure(isolated_audit_log):
     """Ambiguous is not bad news. Nagging on a guess trains people to ignore it."""
-    from vtp.calibration import _last_print_went_badly
+    from evee.calibration import _last_print_went_badly
 
     isolated_audit_log.write_text(
         json.dumps({"event": "start_print", "file": "c.gcode"}) + "\n", encoding="utf-8"
@@ -353,7 +353,7 @@ def test_starting_the_daemon_mid_print_does_not_announce_a_start(isolated_audit_
 # NOT change, not about the one line that does.
 # --------------------------------------------------------------------------- #
 
-from vtp.config import _dotenv, env_value, write_env_value
+from evee.config import _dotenv, env_value, write_env_value
 
 ENV_SAMPLE = """\
 # Copy to .env and fill in. .env is gitignored — never commit the real key.
@@ -372,12 +372,12 @@ def test_writing_a_key_leaves_every_other_line_alone(tmp_path):
     env = tmp_path / ".env"
     env.write_text(ENV_SAMPLE, encoding="utf-8")
 
-    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    write_env_value("NTFY_TOPIC", "evee-abc123", env)
     after = env.read_text(encoding="utf-8").splitlines()
 
     for line in ENV_SAMPLE.splitlines():
         assert line in after, f"lost: {line!r}"
-    assert "NTFY_TOPIC=vtp-abc123" in after
+    assert "NTFY_TOPIC=evee-abc123" in after
     # Exactly one line added, nothing reordered.
     assert len(after) == len(ENV_SAMPLE.splitlines()) + 1
 
@@ -386,7 +386,7 @@ def test_the_api_key_survives_verbatim(tmp_path):
     env = tmp_path / ".env"
     env.write_text(ENV_SAMPLE, encoding="utf-8")
 
-    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    write_env_value("NTFY_TOPIC", "evee-abc123", env)
 
     assert "OCTOPRINT_API_KEY=SECRETKEYVALUE" in env.read_text(encoding="utf-8")
 
@@ -395,15 +395,15 @@ def test_an_existing_key_is_replaced_in_place_not_appended(tmp_path):
     """_dotenv takes the LAST occurrence, so an appended duplicate would silently win
     while the top of the file still showed the old value."""
     env = tmp_path / ".env"
-    env.write_text(ENV_SAMPLE + "NTFY_TOPIC=vtp-old\nTRAILING=yes\n", encoding="utf-8")
+    env.write_text(ENV_SAMPLE + "NTFY_TOPIC=evee-old\nTRAILING=yes\n", encoding="utf-8")
 
-    write_env_value("NTFY_TOPIC", "vtp-new", env)
+    write_env_value("NTFY_TOPIC", "evee-new", env)
     lines = env.read_text(encoding="utf-8").splitlines()
 
-    assert lines.count("NTFY_TOPIC=vtp-new") == 1
-    assert "NTFY_TOPIC=vtp-old" not in lines
+    assert lines.count("NTFY_TOPIC=evee-new") == 1
+    assert "NTFY_TOPIC=evee-old" not in lines
     # Replaced where it was — the line after it did not move to the top.
-    assert lines.index("NTFY_TOPIC=vtp-new") < lines.index("TRAILING=yes")
+    assert lines.index("NTFY_TOPIC=evee-new") < lines.index("TRAILING=yes")
 
 
 def test_pre_existing_duplicates_are_collapsed(tmp_path):
@@ -446,7 +446,7 @@ def test_the_previous_file_is_backed_up(tmp_path):
     env = tmp_path / ".env"
     env.write_text(ENV_SAMPLE, encoding="utf-8")
 
-    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    write_env_value("NTFY_TOPIC", "evee-abc123", env)
 
     assert (tmp_path / ".env.bak").read_text(encoding="utf-8") == ENV_SAMPLE
 
@@ -455,17 +455,17 @@ def test_a_missing_env_is_created_from_the_example(tmp_path):
     (tmp_path / ".env.example").write_text("# docs\nOCTOPRINT_URL=\n", encoding="utf-8")
     env = tmp_path / ".env"
 
-    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
+    write_env_value("NTFY_TOPIC", "evee-abc123", env)
     text = env.read_text(encoding="utf-8")
 
     assert "# docs" in text  # arrives documented, not as a bare key=value
-    assert "NTFY_TOPIC=vtp-abc123" in text
+    assert "NTFY_TOPIC=evee-abc123" in text
 
 
 def test_a_missing_env_with_no_example_still_works(tmp_path):
     env = tmp_path / ".env"
-    write_env_value("NTFY_TOPIC", "vtp-abc123", env)
-    assert env.read_text(encoding="utf-8") == "NTFY_TOPIC=vtp-abc123\n"
+    write_env_value("NTFY_TOPIC", "evee-abc123", env)
+    assert env.read_text(encoding="utf-8") == "NTFY_TOPIC=evee-abc123\n"
 
 
 def test_a_value_containing_a_hash_survives(tmp_path):
@@ -484,7 +484,7 @@ def test_the_cache_is_cleared_so_the_new_value_is_readable(tmp_path, monkeypatch
     """_dotenv is lru_cached — without a clear, a running process keeps the old value."""
     env = tmp_path / ".env"
     env.write_text("NTFY_TOPIC=old\n", encoding="utf-8")
-    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+    monkeypatch.setattr("evee.config.ENV_PATH", env)
     monkeypatch.delenv("NTFY_TOPIC", raising=False)
 
     _dotenv.cache_clear()
@@ -505,15 +505,15 @@ def test_the_cache_is_cleared_so_the_new_value_is_readable(tmp_path, monkeypatch
 
 from types import SimpleNamespace
 
-from vtp import notify as notify_module
+from evee import notify as notify_module
 
 
 @pytest.fixture
 def wizard(tmp_path, monkeypatch):
     """Isolate .env and stub the network, returning a record of what was sent."""
     env = tmp_path / ".env"
-    monkeypatch.setattr("vtp.config.ENV_PATH", env)
-    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr("evee.config.ENV_PATH", env)
+    monkeypatch.setattr("evee.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
 
     # These tests drive the interactive wizard, so they must claim a terminal —
     # pytest's stdin is a pipe, which the wizard correctly refuses to prompt into.
@@ -521,7 +521,7 @@ def wizard(tmp_path, monkeypatch):
 
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "vtp.notify._send_test",
+        "evee.notify._send_test",
         lambda server, topic: (sent.append((server, topic)), True)[1],
     )
     return SimpleNamespace(env=env, sent=sent)
@@ -534,7 +534,7 @@ def _answers(monkeypatch, *replies):
 
 def test_a_generated_topic_is_not_guessable():
     topic = notify_module.generate_topic()
-    assert topic.startswith("vtp-")
+    assert topic.startswith("evee-")
     assert len(topic) > 14
     assert topic != notify_module.generate_topic()
 
@@ -543,7 +543,7 @@ def test_setup_writes_env_only_after_the_phone_buzzed(wizard, monkeypatch):
     _answers(monkeypatch, "y", "y")  # subscribed? yes.  buzzed? yes.
     assert notify_module.setup() == 0
 
-    assert "NTFY_TOPIC=vtp-" in wizard.env.read_text(encoding="utf-8")
+    assert "NTFY_TOPIC=evee-" in wizard.env.read_text(encoding="utf-8")
     assert len(wizard.sent) == 1
 
 
@@ -564,7 +564,7 @@ def test_setup_writes_nothing_if_the_person_backs_out(wizard, monkeypatch):
 
 
 def test_setup_writes_nothing_when_the_send_fails(wizard, monkeypatch):
-    monkeypatch.setattr("vtp.notify._send_test", lambda *a: False)
+    monkeypatch.setattr("evee.notify._send_test", lambda *a: False)
     _answers(monkeypatch, "y")
     assert notify_module.setup() == 1
 
@@ -573,38 +573,38 @@ def test_setup_writes_nothing_when_the_send_fails(wizard, monkeypatch):
 
 def test_an_explicit_topic_is_used_verbatim(wizard, monkeypatch):
     _answers(monkeypatch, "y", "y")
-    assert notify_module.setup("vtp-chosen-by-hand") == 0
+    assert notify_module.setup("evee-chosen-by-hand") == 0
 
-    assert "NTFY_TOPIC=vtp-chosen-by-hand" in wizard.env.read_text(encoding="utf-8")
-    assert wizard.sent[0][1] == "vtp-chosen-by-hand"
+    assert "NTFY_TOPIC=evee-chosen-by-hand" in wizard.env.read_text(encoding="utf-8")
+    assert wizard.sent[0][1] == "evee-chosen-by-hand"
 
 
 def test_an_existing_topic_is_offered_for_reuse(tmp_path, monkeypatch):
     """Regenerating silently would unsubscribe somebody's phone without telling them."""
     env = tmp_path / ".env"
-    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+    monkeypatch.setattr("evee.config.ENV_PATH", env)
     monkeypatch.setattr(
-        "vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", "vtp-already-set")
+        "evee.notify.ntfy_settings", lambda: ("https://ntfy.test", "evee-already-set")
     )
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     sent = []
     monkeypatch.setattr(
-        "vtp.notify._send_test", lambda s, t: (sent.append(t), True)[1]
+        "evee.notify._send_test", lambda s, t: (sent.append(t), True)[1]
     )
 
     _answers(monkeypatch, "n", "y", "y")  # regenerate? no.  subscribed? yes.  buzzed? yes.
     assert notify_module.setup() == 0
-    assert sent == ["vtp-already-set"]
+    assert sent == ["evee-already-set"]
 
 
 def test_check_reports_a_missing_topic_and_names_the_fix(monkeypatch, capsys):
-    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr("evee.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
     assert notify_module.check() == 2
     assert "--setup" in capsys.readouterr().out
 
 
 def test_the_daemon_points_at_setup_rather_than_explaining_by_hand(monkeypatch, caplog):
-    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr("evee.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
     with caplog.at_level("ERROR"):
         assert notify_module.main([]) == 2
     assert "--setup" in caplog.text
@@ -615,8 +615,8 @@ def test_a_pipe_is_not_mistaken_for_a_refusal(monkeypatch, capsys, tmp_path):
     "no" — so the wizard used to end with "Stopped. Nothing was written.", which is the
     right action attached to a misleading reason. It has to say the terminal is missing
     and give a path that works anyway."""
-    monkeypatch.setattr("vtp.config.ENV_PATH", tmp_path / ".env")
-    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr("evee.config.ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr("evee.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
     assert notify_module.setup() == 2
@@ -631,28 +631,28 @@ def test_a_pipe_is_not_mistaken_for_a_refusal(monkeypatch, capsys, tmp_path):
 def test_check_can_test_a_topic_before_it_is_saved(monkeypatch, capsys):
     """The two-step path needs to test a candidate without committing to it."""
     sent = []
-    monkeypatch.setattr("vtp.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
+    monkeypatch.setattr("evee.notify.ntfy_settings", lambda: ("https://ntfy.test", None))
     monkeypatch.setattr(
-        "vtp.notify._send_test", lambda s, t: (sent.append(t), True)[1]
+        "evee.notify._send_test", lambda s, t: (sent.append(t), True)[1]
     )
 
-    assert notify_module.check("vtp-candidate") == 0
-    assert sent == ["vtp-candidate"]
+    assert notify_module.check("evee-candidate") == 0
+    assert sent == ["evee-candidate"]
 
 
 def test_save_topic_writes_only_the_one_key(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("OCTOPRINT_API_KEY=SECRET\n", encoding="utf-8")
-    monkeypatch.setattr("vtp.config.ENV_PATH", env)
+    monkeypatch.setattr("evee.config.ENV_PATH", env)
 
-    assert notify_module.save_topic("vtp-confirmed") == 0
+    assert notify_module.save_topic("evee-confirmed") == 0
     text = env.read_text(encoding="utf-8")
 
-    assert "NTFY_TOPIC=vtp-confirmed" in text
+    assert "NTFY_TOPIC=evee-confirmed" in text
     assert "OCTOPRINT_API_KEY=SECRET" in text
 
 
 def test_save_topic_refuses_an_empty_topic(tmp_path, monkeypatch):
-    monkeypatch.setattr("vtp.config.ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr("evee.config.ENV_PATH", tmp_path / ".env")
     assert notify_module.save_topic("   ") == 2
     assert not (tmp_path / ".env").exists()

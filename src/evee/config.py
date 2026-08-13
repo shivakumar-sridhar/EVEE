@@ -172,7 +172,7 @@ def _dotenv(path: Path | None = None) -> dict[str, str]:
     the whole mechanism. An MCP client spawns this server with a scrubbed
     environment — ``HOME``, ``LOGNAME``, ``PATH``, ``SHELL``, ``TERM``, ``USER`` and
     nothing more — so ``OCTOPRINT_API_KEY`` exported in a shell never arrives. The
-    same discovery that put :func:`vtp.viewer.discover_display` on disk applies here.
+    same discovery that put :func:`evee.viewer.discover_display` on disk applies here.
 
     Deliberately not a dotenv library and deliberately not exported into
     ``os.environ``: values are handed to the one caller that asked, so a secret does
@@ -276,7 +276,7 @@ def env_value(name: str) -> str | None:
 def octoprint_settings() -> tuple[str | None, str | None]:
     """``(base_url, api_key)`` for the Pi, either of which may be None.
 
-    Missing values are returned rather than raised on: :mod:`vtp.printer` owns the
+    Missing values are returned rather than raised on: :mod:`evee.printer` owns the
     wording of that failure, and it is the module whose error messages a client
     model reads. The URL loses any trailing slash so joining a path cannot double it.
     """

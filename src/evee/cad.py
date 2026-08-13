@@ -15,8 +15,8 @@ import numpy as np
 import trimesh
 from build123d import Compound, Location, Mesher, Part, export_stl
 
-from vtp.config import OUTPUT_DIR, bed_violations, export_tolerances, plate_margin
-from vtp.templates import TEMPLATE_REGISTRY, get_template
+from evee.config import OUTPUT_DIR, bed_violations, export_tolerances, plate_margin
+from evee.templates import TEMPLATE_REGISTRY, get_template
 
 __all__ = [
     "DesignResult",
@@ -77,7 +77,7 @@ def design(
     """Build a template's parts, export STLs, and render previews.
 
     Args:
-        template: A key of :data:`vtp.templates.TEMPLATE_REGISTRY`.
+        template: A key of :data:`evee.templates.TEMPLATE_REGISTRY`.
         params: Raw parameters; validated against the template's Pydantic model.
         output_dir: Where to write. Defaults to the repo's ``output/``.
         slug: Filename stem. Defaults to the template name.

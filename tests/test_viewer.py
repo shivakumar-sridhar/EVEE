@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from vtp.viewer import (
+from evee.viewer import (
     ViewerLaunch,
     _cmdline,
     _remember,
@@ -36,12 +36,12 @@ def stl(tmp_path):
 
 @pytest.fixture
 def with_display(monkeypatch):
-    monkeypatch.setattr("vtp.viewer.discover_display", lambda: {"DISPLAY": ":0"})
+    monkeypatch.setattr("evee.viewer.discover_display", lambda: {"DISPLAY": ":0"})
 
 
 @pytest.fixture
 def headless(monkeypatch):
-    monkeypatch.setattr("vtp.viewer.discover_display", lambda: {})
+    monkeypatch.setattr("evee.viewer.discover_display", lambda: {})
 
 
 # --------------------------------------------------------------------------- #
@@ -57,7 +57,7 @@ def test_headless_declines_without_raising(stl, headless):
 
 
 def test_missing_binary_names_it_and_the_config_key(stl, with_display, monkeypatch):
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: None)
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: None)
     launch = open_model([stl], command=["definitely-not-installed"])
     assert launch.launched is False
     assert "definitely-not-installed" in launch.reason
@@ -65,12 +65,12 @@ def test_missing_binary_names_it_and_the_config_key(stl, with_display, monkeypat
 
 
 def test_auto_open_false_is_respected(stl, with_display, monkeypatch):
-    monkeypatch.setattr("vtp.viewer.viewer_settings", lambda: (["true"], False))
+    monkeypatch.setattr("evee.viewer.viewer_settings", lambda: (["true"], False))
     assert open_model([stl]).launched is False
 
 
 def test_force_overrides_auto_open_false(stl, with_display, monkeypatch):
-    monkeypatch.setattr("vtp.viewer.viewer_settings", lambda: (["true"], False))
+    monkeypatch.setattr("evee.viewer.viewer_settings", lambda: (["true"], False))
     assert open_model([stl], force=True).launched is True
 
 
@@ -79,14 +79,14 @@ def test_empty_path_list_declines(with_display):
 
 
 def test_empty_command_declines(stl, with_display, monkeypatch):
-    monkeypatch.setattr("vtp.viewer.viewer_settings", lambda: ([], True))
+    monkeypatch.setattr("evee.viewer.viewer_settings", lambda: ([], True))
     launch = open_model([stl])
     assert launch.launched is False
     assert "empty" in launch.reason
 
 
 def test_unstartable_binary_is_reported_not_raised(stl, with_display, monkeypatch):
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: "/bin/whatever")
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: "/bin/whatever")
     monkeypatch.setattr(
         subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
     )
@@ -113,7 +113,7 @@ def test_launch_appends_every_path_after_the_flags(stl, tmp_path, with_display, 
         seen["kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: "/usr/bin/f3d")
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: "/usr/bin/f3d")
     monkeypatch.setattr(subprocess, "Popen", popen)
 
     launch = open_model([stl, second], command=["f3d", "--up=+Z"])
@@ -131,7 +131,7 @@ def test_child_gets_no_inherited_stdio(stl, with_display, monkeypatch):
     class FakeProc:
         pid = 1
 
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: "/usr/bin/f3d")
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: "/usr/bin/f3d")
     monkeypatch.setattr(
         subprocess, "Popen", lambda argv, **kw: (seen.update(kw), FakeProc())[1]
     )
@@ -145,13 +145,13 @@ def test_child_gets_no_inherited_stdio(stl, with_display, monkeypatch):
 
 
 def test_summary_is_readable_in_both_outcomes(stl, with_display, monkeypatch):
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: None)
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: None)
     assert "No viewer window" in open_model([stl], command=["absent"]).summary()
 
     class FakeProc:
         pid = 77
 
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: "/usr/bin/f3d")
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: "/usr/bin/f3d")
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
     assert "f3d" in open_model([stl], command=["f3d"]).summary()
 
@@ -177,8 +177,8 @@ def test_finds_wayland_socket_when_the_client_scrubbed_the_env(
 ):
     (tmp_path / "wayland-0").touch()
     (tmp_path / "wayland-0.lock").touch()
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: tmp_path)
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", tmp_path / "absent")
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: tmp_path)
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", tmp_path / "absent")
 
     env = discover_display()
     # The .lock beside the socket is not a display.
@@ -194,8 +194,8 @@ def test_falls_back_to_an_x11_socket(tmp_path, scrubbed_env, monkeypatch):
     x11 = tmp_path / "x11"
     x11.mkdir()
     (x11 / "X1").touch()
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: runtime)
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", x11)
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: runtime)
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", x11)
 
     env = discover_display()
     assert env["DISPLAY"] == ":1"
@@ -204,8 +204,8 @@ def test_falls_back_to_an_x11_socket(tmp_path, scrubbed_env, monkeypatch):
 
 
 def test_no_sockets_anywhere_is_headless(tmp_path, scrubbed_env, monkeypatch):
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: tmp_path / "absent")
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", tmp_path / "also-absent")
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", tmp_path / "also-absent")
     assert discover_display() == {}
     assert display_available() is False
 
@@ -216,7 +216,7 @@ def test_an_explicitly_set_display_is_trusted_over_discovery(tmp_path, monkeypat
     monkeypatch.setenv("DISPLAY", ":7")
     monkeypatch.setenv("XAUTHORITY", str(cookie))
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: tmp_path / "absent")
 
     env = discover_display()
     assert env["DISPLAY"] == ":7"
@@ -234,9 +234,9 @@ def test_display_is_dropped_when_no_cookie_can_be_found(
     x11 = tmp_path / "x11"
     x11.mkdir()
     (x11 / "X0").touch()
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: runtime)
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", x11)
-    monkeypatch.setattr("vtp.viewer.Path.home", lambda: tmp_path / "nohome")
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: runtime)
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", x11)
+    monkeypatch.setattr("evee.viewer.Path.home", lambda: tmp_path / "nohome")
 
     assert discover_display() == {}
 
@@ -250,9 +250,9 @@ def test_home_xauthority_is_the_last_resort(tmp_path, scrubbed_env, monkeypatch)
     x11 = tmp_path / "x11"
     x11.mkdir()
     (x11 / "X0").touch()
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: runtime)
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", x11)
-    monkeypatch.setattr("vtp.viewer.Path.home", lambda: home)
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: runtime)
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", x11)
+    monkeypatch.setattr("evee.viewer.Path.home", lambda: home)
 
     assert discover_display()["XAUTHORITY"] == str(home / ".Xauthority")
 
@@ -263,9 +263,9 @@ def test_wayland_survives_without_a_cookie(tmp_path, scrubbed_env, monkeypatch):
     runtime = tmp_path / "run"
     runtime.mkdir()
     (runtime / "wayland-0").touch()
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: runtime)
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", tmp_path / "absent")
-    monkeypatch.setattr("vtp.viewer.Path.home", lambda: tmp_path / "nohome")
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: runtime)
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", tmp_path / "absent")
+    monkeypatch.setattr("evee.viewer.Path.home", lambda: tmp_path / "nohome")
 
     env = discover_display()
     assert env["WAYLAND_DISPLAY"] == "wayland-0"
@@ -277,9 +277,9 @@ def test_unreadable_x11_socket_is_skipped(tmp_path, scrubbed_env, monkeypatch):
     x11 = tmp_path / "x11"
     x11.mkdir()
     (x11 / "X0").touch()
-    monkeypatch.setattr("vtp.viewer._runtime_dir", lambda: tmp_path / "absent")
-    monkeypatch.setattr("vtp.viewer._X11_SOCKET_DIR", x11)
-    monkeypatch.setattr("vtp.viewer.os.access", lambda p, mode: False)
+    monkeypatch.setattr("evee.viewer._runtime_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr("evee.viewer._X11_SOCKET_DIR", x11)
+    monkeypatch.setattr("evee.viewer.os.access", lambda p, mode: False)
     assert discover_display() == {}
 
 
@@ -291,10 +291,10 @@ def test_child_receives_the_rediscovered_session_variables(stl, monkeypatch):
         pid = 5
 
     monkeypatch.setattr(
-        "vtp.viewer.discover_display",
+        "evee.viewer.discover_display",
         lambda: {"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/run/user/1000"},
     )
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: "/usr/bin/f3d")
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: "/usr/bin/f3d")
     monkeypatch.setattr(
         subprocess, "Popen", lambda argv, **kw: (seen.update(kw), FakeProc())[1]
     )
@@ -320,10 +320,10 @@ def test_open_gcode_uses_its_own_configured_command(tmp_path, with_display, monk
         pid = 9
 
     monkeypatch.setattr(
-        "vtp.viewer.gcode_viewer_settings",
+        "evee.viewer.gcode_viewer_settings",
         lambda: (["prusa-gcodeviewer"], True, "[viewer].gcode_auto_open"),
     )
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: "/usr/bin/prusa-gcodeviewer")
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: "/usr/bin/prusa-gcodeviewer")
     monkeypatch.setattr(
         subprocess, "Popen", lambda argv, **kw: (seen.update({"argv": argv}), FakeProc())[1]
     )
@@ -343,7 +343,7 @@ def test_open_gcode_names_its_own_config_key(tmp_path, with_display, monkeypatch
     """The reason must point at the key to edit, not the other gate's key."""
     gcode = tmp_path / "part.gcode"
     gcode.write_text("; hi", encoding="utf-8")
-    monkeypatch.setattr("vtp.viewer.shutil.which", lambda _: None)
+    monkeypatch.setattr("evee.viewer.shutil.which", lambda _: None)
     reason = open_gcode(gcode, command=["absent"], force=True).reason
     assert "gcode_command" in reason
 
@@ -364,7 +364,7 @@ def test_no_screen_beats_the_gate_2_preference(tmp_path, headless, monkeypatch):
     gcode = tmp_path / "part.gcode"
     gcode.write_text("; hi", encoding="utf-8")
     monkeypatch.setattr(
-        "vtp.viewer.gcode_viewer_settings",
+        "evee.viewer.gcode_viewer_settings",
         lambda: (["prusa-gcodeviewer"], False, "[viewer].auto_open"),
     )
     assert "[viewer].auto_open" in open_gcode(gcode).reason

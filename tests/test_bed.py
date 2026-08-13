@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from vtp.config import bed_extents, bed_violations, slicer_profile
+from evee.config import bed_extents, bed_violations, slicer_profile
 
 
 def test_bed_comes_from_the_verified_profile():
@@ -28,7 +28,7 @@ def test_a_profile_without_bed_keys_raises_rather_than_defaulting(tmp_path, monk
     """A wrong bed size that silently passes is worse than no check."""
     profile = tmp_path / "bare.ini"
     profile.write_text("layer_height = 0.2\n", encoding="utf-8")
-    monkeypatch.setattr("vtp.config.slicer_profile", lambda: profile)
+    monkeypatch.setattr("evee.config.slicer_profile", lambda: profile)
     bed_extents.cache_clear()
     try:
         with pytest.raises(KeyError, match="bed_shape"):

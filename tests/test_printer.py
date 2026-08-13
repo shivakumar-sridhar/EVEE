@@ -1,6 +1,6 @@
 """Printer client tests — mostly about what does NOT happen.
 
-Every guard in :mod:`vtp.printer` is asserted twice: that it raises, and that the
+Every guard in :mod:`evee.printer` is asserted twice: that it raises, and that the
 request which would have started a print was never sent. The second half is the part
 that matters. A guard that raises after issuing the command is not a guard, and a
 test that only checks the exception cannot tell the difference.
@@ -17,8 +17,8 @@ import json
 import httpx2
 import pytest
 
-from vtp.config import _dotenv, bed_extents
-from vtp.printer import (
+from evee.config import _dotenv, bed_extents
+from evee.printer import (
     JobStatus,
     OctoPrintClient,
     PrinterError,
@@ -139,7 +139,7 @@ def test_missing_credentials_name_the_file_not_the_shell(monkeypatch):
     A user who exports the key in their shell and gets "not configured" needs to be
     told why that did not work — the MCP client scrubs the environment.
     """
-    monkeypatch.setattr("vtp.printer.octoprint_settings", lambda: (None, None))
+    monkeypatch.setattr("evee.printer.octoprint_settings", lambda: (None, None))
     with pytest.raises(PrinterUnreachable) as exc:
         OctoPrintClient()
     message = str(exc.value)
@@ -149,7 +149,7 @@ def test_missing_credentials_name_the_file_not_the_shell(monkeypatch):
 
 
 def test_missing_key_alone_is_named_alone(monkeypatch):
-    monkeypatch.setattr("vtp.printer.octoprint_settings", lambda: (BASE, None))
+    monkeypatch.setattr("evee.printer.octoprint_settings", lambda: (BASE, None))
     with pytest.raises(PrinterUnreachable) as exc:
         OctoPrintClient()
     assert "OCTOPRINT_API_KEY" in str(exc.value)
@@ -413,7 +413,7 @@ def test_confirmation_is_keyword_only():
 
 
 @pytest.mark.parametrize(
-    "bad", ["/home/shiv/EVI/output/part.gcode", "sub/part.gcode", "..\\part.gcode", ""]
+    "bad", ["/home/shiv/EVEE/output/part.gcode", "sub/part.gcode", "..\\part.gcode", ""]
 )
 def test_a_path_is_not_a_filename(bad):
     printer, recorder = client({})
@@ -556,7 +556,7 @@ def test_refusals_are_not_recorded(isolated_audit_log):
 
 def test_audit_failure_does_not_stop_a_print(monkeypatch, tmp_path):
     """The record is best effort. An unwritable log must not block an approved start."""
-    monkeypatch.setattr("vtp.printer.AUDIT_LOG", tmp_path / "nope" / "x.jsonl")
+    monkeypatch.setattr("evee.printer.AUDIT_LOG", tmp_path / "nope" / "x.jsonl")
     monkeypatch.setattr(
         "pathlib.Path.mkdir",
         lambda *a, **k: (_ for _ in ()).throw(OSError("read-only")),
@@ -877,7 +877,7 @@ def test_storing_a_mesh_refuses_while_printing():
 
 def test_a_confirmed_probe_is_recorded(isolated_mesh_state):
     """The sentinel: the target only appears once Marlin is past G29."""
-    from vtp.calibration import mesh_state
+    from evee.calibration import mesh_state
 
     printer, recorder = client(_mesh_routes([0.0, 0.0, 42.0]))
     result = printer.store_bed_mesh(bed_confirmed_clear=True)
@@ -897,7 +897,7 @@ def test_an_unconfirmed_probe_records_nothing(isolated_mesh_state):
     makes every later slice emit M420 S1, which Marlin does not refuse — it prints on
     a flat plane and mentions it only on the serial console.
     """
-    from vtp.calibration import mesh_state
+    from evee.calibration import mesh_state
 
     printer, _ = client(_mesh_routes([0.0]))
     result = printer.store_bed_mesh(bed_confirmed_clear=True)
@@ -929,7 +929,7 @@ def test_the_nozzle_is_cooled_whether_or_not_the_probe_confirmed():
 # started — caught only by reading the file after the print was running.
 
 
-from vtp.printer import stale_reason
+from evee.printer import stale_reason
 
 
 def _aged(path, seconds):
@@ -948,7 +948,7 @@ def test_a_gcode_older_than_the_profile_is_refused(tmp_path, monkeypatch):
     gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
     _aged(gcode, 60)
 
-    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: profile)
+    monkeypatch.setattr("evee.printer.slicer_profile", lambda: profile)
     reason = stale_reason(gcode)
 
     assert reason is not None
@@ -959,7 +959,7 @@ def test_a_gcode_older_than_the_profile_is_refused(tmp_path, monkeypatch):
 
 
 def test_a_gcode_older_than_its_stl_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: tmp_path / "absent.ini")
+    monkeypatch.setattr("evee.printer.slicer_profile", lambda: tmp_path / "absent.ini")
     (tmp_path / "part.stl").write_text("solid x", encoding="utf-8")
     gcode = tmp_path / "part.gcode"
     gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
@@ -977,13 +977,13 @@ def test_a_current_gcode_passes(tmp_path, monkeypatch):
     gcode = tmp_path / "part.gcode"
     gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
 
-    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: profile)
+    monkeypatch.setattr("evee.printer.slicer_profile", lambda: profile)
     assert stale_reason(gcode) is None
 
 
 def test_nothing_to_compare_against_is_not_staleness(tmp_path, monkeypatch):
     """A missing profile or a G-code with no sibling STL is not evidence of anything."""
-    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: tmp_path / "absent.ini")
+    monkeypatch.setattr("evee.printer.slicer_profile", lambda: tmp_path / "absent.ini")
     gcode = tmp_path / "part.gcode"
     gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
 
@@ -999,7 +999,7 @@ def test_the_upload_refuses_a_stale_file_before_touching_the_network(tmp_path, m
     gcode = tmp_path / "part.gcode"
     gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
     _aged(gcode, 60)
-    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: profile)
+    monkeypatch.setattr("evee.printer.slicer_profile", lambda: profile)
 
     printer, recorder = client({})
     with pytest.raises(PrintRefused, match="stale"):

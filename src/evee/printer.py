@@ -45,8 +45,8 @@ from typing import Any
 
 import httpx2
 
-from vtp.calibration import record_mesh_stored
-from vtp.config import (
+from evee.calibration import record_mesh_stored
+from evee.config import (
     OUTPUT_DIR,
     bed_extents,
     mesh_probe_settings,
@@ -105,7 +105,7 @@ def stale_reason(gcode_path: Path | str) -> str | None:
 
     - **the slicer profile**, since editing ``start_gcode`` invalidates every G-code ever
       sliced, silently and all at once
-    - **the sibling STL**, found by the naming convention :func:`vtp.slicer.slice_stl`
+    - **the sibling STL**, found by the naming convention :func:`evee.slicer.slice_stl`
       writes with (same stem, ``.stl``), for the case where the geometry moved on
     """
     path = Path(gcode_path)

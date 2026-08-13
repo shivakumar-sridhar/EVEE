@@ -12,8 +12,8 @@ import shutil
 
 import pytest
 
-from vtp.config import slicer_profile
-from vtp.slicer import SliceResult, SlicerError, _parse_duration, slice_stl
+from evee.config import slicer_profile
+from evee.slicer import SliceResult, SlicerError, _parse_duration, slice_stl
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -74,7 +74,7 @@ def fake_slice(tmp_path, monkeypatch, gcode_text=FIXTURE_GCODE, returncode=0):
         return subprocess.CompletedProcess(command, returncode, "progress 90%", "")
 
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr("vtp.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
+    monkeypatch.setattr("evee.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
     return stl
 
 
@@ -123,7 +123,7 @@ def test_parses_the_real_footer_layout(tmp_path, monkeypatch):
 def test_first_filament_value_wins_over_the_config_block_echo():
     """`; filament used [g]` appears again inside prusaslicer_config with a
     different value. Reading the last match would report 999.99 g."""
-    from vtp.slicer import _parse_gcode
+    from evee.slicer import _parse_gcode
     import tempfile
     from pathlib import Path
 
@@ -188,7 +188,7 @@ def test_slicer_failure_includes_its_stderr(tmp_path, monkeypatch):
 
     stl = tmp_path / "part.stl"
     stl.write_bytes(b"solid x\nendsolid x\n")
-    monkeypatch.setattr("vtp.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
+    monkeypatch.setattr("evee.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -205,7 +205,7 @@ def test_zero_exit_without_output_is_still_a_failure(tmp_path, monkeypatch):
 
     stl = tmp_path / "part.stl"
     stl.write_bytes(b"solid x\nendsolid x\n")
-    monkeypatch.setattr("vtp.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
+    monkeypatch.setattr("evee.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -223,7 +223,7 @@ def test_captures_child_output_rather_than_inheriting_it(tmp_path, monkeypatch):
     seen = {}
     stl = tmp_path / "part.stl"
     stl.write_bytes(b"solid x\nendsolid x\n")
-    monkeypatch.setattr("vtp.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
+    monkeypatch.setattr("evee.slicer.shutil.which", lambda _: "/usr/bin/prusa-slicer")
 
     def run(command, **kwargs):
         seen.update(kwargs)
@@ -254,7 +254,7 @@ def test_summary_reads_back_the_numbers(tmp_path, monkeypatch):
 def test_acceptance_slices_the_verified_part(tmp_path):
     """Phase 2 acceptance: the Phase 1 STL slices, and its metadata matches the
     physically verified print — 55 layers, 4.25 g, 30m 44s."""
-    from vtp.cad import design
+    from evee.cad import design
 
     designed = design(
         "box_with_lid",
@@ -288,7 +288,7 @@ def test_oversized_part_is_refused_before_the_slicer_runs(tmp_path, monkeypatch)
     """PrusaSlicer rejects it too, but names neither the axis nor the overshoot."""
     import subprocess
 
-    from vtp.cad import design
+    from evee.cad import design
 
     designed = design(
         "box_with_lid",

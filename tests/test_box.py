@@ -13,12 +13,12 @@ import pytest
 from build123d import Align, Box, Location
 from pydantic import ValidationError
 
-from vtp.config import (
+from evee.config import (
     clearance as default_clearance,
     geometry_defaults,
     standoff_defaults,
 )
-from vtp.templates.box import (
+from evee.templates.box import (
     _BOSS_HOLE_STOP,
     BoxWithLidParams,
     PortSpec,
@@ -546,7 +546,7 @@ def test_sliding_lid_is_deferred_not_silently_wrong():
 # board sits on the floor standoffs, so the screw would span air.
 # --------------------------------------------------------------------------- #
 
-from vtp.templates.box import LidPostSpec
+from evee.templates.box import LidPostSpec
 
 CASE = dict(outer_l=30.6, outer_w=27.7, outer_h=14.0, wall=2.0)
 CORNERS = [(sx * 10.16, sy * 8.89) for sx in (-1, 1) for sy in (-1, 1)]

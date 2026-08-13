@@ -17,8 +17,8 @@ import anyio
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from vtp.config import OUTPUT_DIR
-from vtp.server import build_server
+from evee.config import OUTPUT_DIR
+from evee.server import build_server
 
 GOOD = {"outer_l": 40, "outer_w": 30, "outer_h": 15}
 
@@ -345,7 +345,7 @@ def test_slice_part_takes_no_profile_parameter(server):
 def test_slice_part_returns_the_metadata_and_a_readback(server, monkeypatch):
     from pathlib import Path
 
-    from vtp.slicer import SliceResult
+    from evee.slicer import SliceResult
 
     stl = OUTPUT_DIR / "box_with_lid_body.stl"
     if not stl.is_file():
@@ -362,7 +362,7 @@ def test_slice_part_returns_the_metadata_and_a_readback(server, monkeypatch):
         filament_cm3=3.43,
         layer_count=55,
     )
-    monkeypatch.setattr("vtp.server.slice_stl", lambda path: fake)
+    monkeypatch.setattr("evee.server.slice_stl", lambda path: fake)
 
     err, payload = call(server, "slice_part", stl_path=str(stl))
     assert not err
@@ -377,14 +377,14 @@ def test_slice_part_returns_the_metadata_and_a_readback(server, monkeypatch):
 def test_slice_part_reports_whether_the_gcode_viewer_opened(server, monkeypatch):
     from pathlib import Path
 
-    from vtp.slicer import SliceResult
+    from evee.slicer import SliceResult
 
     stl = OUTPUT_DIR / "box_with_lid_body.stl"
     if not stl.is_file():
         pytest.skip("no exported STL to point at")
 
     monkeypatch.setattr(
-        "vtp.server.slice_stl",
+        "evee.server.slice_stl",
         lambda path: SliceResult(
             stl_path=stl,
             gcode_path=OUTPUT_DIR / "box_with_lid_body.gcode",
@@ -406,7 +406,7 @@ def test_slice_part_reports_whether_the_gcode_viewer_opened(server, monkeypatch)
 
 def test_slice_part_refuses_an_oversized_part_naming_the_axis(server, tmp_path):
     """The bed limit reaches the client as a message it can act on."""
-    from vtp.cad import design
+    from evee.cad import design
 
     designed = design(
         "box_with_lid",
@@ -451,7 +451,7 @@ class FakePrinter:
         return None
 
     def get_status(self):
-        from vtp.printer import PrinterStatus
+        from evee.printer import PrinterStatus
 
         return PrinterStatus(
             state="Operational",
@@ -467,7 +467,7 @@ class FakePrinter:
         )
 
     def get_job(self):
-        from vtp.printer import JobStatus
+        from evee.printer import JobStatus
 
         return JobStatus(
             state="Operational",
@@ -478,7 +478,7 @@ class FakePrinter:
         )
 
     def upload_and_print(self, path, *, bed_confirmed_clear):
-        from vtp.printer import JobStatus, PrintRefused, UploadResult
+        from evee.printer import JobStatus, PrintRefused, UploadResult
 
         FakePrinter.calls.append(("upload_and_print", str(path), bed_confirmed_clear))
         if bed_confirmed_clear is not True:
@@ -501,7 +501,7 @@ class FakePrinter:
     mesh_stored = True
 
     def store_bed_mesh(self, *, bed_confirmed_clear):
-        from vtp.printer import MeshResult, PrintRefused
+        from evee.printer import MeshResult, PrintRefused
 
         FakePrinter.calls.append(("store_bed_mesh", bed_confirmed_clear))
         if bed_confirmed_clear is not True:
@@ -517,7 +517,7 @@ class FakePrinter:
         )
 
     def cancel_print(self, *, confirmed):
-        from vtp.printer import CancelResult, JobStatus, PrintRefused
+        from evee.printer import CancelResult, JobStatus, PrintRefused
 
         FakePrinter.calls.append(("cancel_print", confirmed))
         if confirmed is not True:
@@ -541,7 +541,7 @@ class FakePrinter:
 @pytest.fixture
 def fake_printer(monkeypatch):
     FakePrinter.calls = []
-    monkeypatch.setattr("vtp.server.OctoPrintClient", FakePrinter)
+    monkeypatch.setattr("evee.server.OctoPrintClient", FakePrinter)
     return FakePrinter
 
 
@@ -735,7 +735,7 @@ def test_start_print_description_no_longer_claims_there_is_no_cancel_tool(server
 
 def test_slice_part_reports_which_levelling_the_gcode_will_use(server, tmp_path):
     """calibrate_bed's description promises this field exists. It has to."""
-    from vtp.cad import design
+    from evee.cad import design
 
     out = design("box_with_lid", GOOD, output_dir=OUTPUT_DIR, slug="_lvl", render=False)
     try:

@@ -17,7 +17,7 @@ mesh and it is not stale, :func:`_apply_stored_mesh` rewrites that one line to
 ``M420 S1`` so the print skips a multi-minute probe. Every uncertain case leaves the
 file untouched, because ``M420 S1`` against a mesh the printer does not have fails
 silently — it prints on a flat plane and complains only to the serial console. See
-:mod:`vtp.calibration`.
+:mod:`evee.calibration`.
 
 **PrusaSlicer writes progress to stdout.** Under the stdio transport that stream is
 JSON-RPC, so the child's output is captured, never inherited. Letting it through would
@@ -33,8 +33,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from vtp.calibration import mesh_state
-from vtp.config import (
+from evee.calibration import mesh_state
+from evee.config import (
     OUTPUT_DIR,
     bed_violations,
     slicer_profile,
@@ -249,7 +249,7 @@ def slice_stl(
     """Slice one STL to G-code and read back the cost of printing it.
 
     Args:
-        stl_path: An STL exported by :func:`vtp.cad.design`.
+        stl_path: An STL exported by :func:`evee.cad.design`.
         profile: PrusaSlicer ``.ini``. Defaults to the verified house profile;
             override only in tests.
         output: G-code destination. Defaults to ``output/<stem>.gcode``.

@@ -1,5 +1,5 @@
 [project]
-name = "vtp"
+name = "evee"
 version = "0.1.0"
 description = "Natural language -> parametric CAD -> sliced G-code -> Ender-3 V3 SE print, via MCP tools"
 readme = "README.md"
@@ -20,7 +20,7 @@ dependencies = [
 
 # There are deliberately no optional dependencies. There was a `voice` extra —
 # claude-agent-sdk, faster-whisper, piper-tts, sounddevice — for a microphone frontend
-# that lived in src/vtp/voice/. It worked, and it was removed: the MCP client already
+# that lived in src/evee/voice/. It worked, and it was removed: the MCP client already
 # has speech input, and reimplementing it here bought nothing the gates did not already
 # guarantee. Speak to your client; the server never learns how the words arrived.
 
@@ -32,7 +32,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vtp"]
+packages = ["src/evee"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

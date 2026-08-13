@@ -1,4 +1,4 @@
-# EVI — voice-to-print
+# EVEE — Everyday Virtual Engineering Engine
 
 Natural language → parametric CAD → sliced G-code → Ender-3 V3 SE print, via MCP tools.
 
@@ -33,7 +33,7 @@ If you find yourself relying on a rule here to keep something safe, that is a bu
 4. Never suggest starting a print when the user is asleep or away from the building.
 5. `start_print` names a file, and the server proves the printer selected that file before starting. OctoPrint's start command carries no filename — see `printer.py`.
 
-All five are Python refusals in `src/vtp/printer.py` and are restated in the MCP tool
+All five are Python refusals in `src/evee/printer.py` and are restated in the MCP tool
 descriptions. If you ever find one holding only because of this file, that is the bug.
 
 ## House defaults (`config/defaults.toml` is the source of truth)
@@ -42,7 +42,7 @@ descriptions. If you ever find one holding only because of this file, that is th
 
 ## CAD conventions
 - build123d, not FreeCAD's API or CadQuery
-- Prefer filling a template in `src/vtp/templates/` over writing new geometry. If none
+- Prefer filling a template in `src/evee/templates/` over writing new geometry. If none
   fits, say so and propose adding one — do not improvise geometry
 - Always report resolved inner dimensions alongside outer
 
@@ -63,10 +63,10 @@ descriptions. If you ever find one holding only because of this file, that is th
   testable live — they refuse. The upload leg is testable live only below MCP: call
   `OctoPrintClient.upload_gcode` directly, since `start_print` would go on to print.
 - **No test may touch the real printer by accident.** `tests/conftest.py` repoints
-  credentials at `printer.invalid` suite-wide, and patches `vtp.printer`, not
-  `vtp.config` — the module binds the name at import, so patching the definition site
+  credentials at `printer.invalid` suite-wide, and patches `evee.printer`, not
+  `evee.config` — the module binds the name at import, so patching the definition site
   silently does nothing and the tests would hit the real Ender.
-- `conftest` also isolates `vtp.calibration.MESH_STATE`. A test that left a state file
+- `conftest` also isolates `evee.calibration.MESH_STATE`. A test that left a state file
   behind would make the next *real* slice emit `M420 S1` for a mesh never stored.
 
 ---
@@ -85,7 +85,7 @@ Seven MCP tools, three human gates. Everything below works and is verified live.
 | MCP server | `server.py` | Done. Verified against a real client over a subprocess |
 | Notifications | `notify.py` | Done. Separate process, systemd unit in `packaging/` |
 
-Removed: the voice frontend (`src/vtp/voice/`). It worked; the client does it better.
+Removed: the voice frontend (`src/evee/voice/`). It worked; the client does it better.
 
 Next: documentation pass and a demo recording. `BUILD_PLAN.md` is kept as the historical
 build plan — where it disagrees with this file, this file wins.
@@ -219,7 +219,7 @@ Each line is a thing that cost time to learn. None of them are obvious from the 
   *appends* to its scene and never clears it — two designs left four objects stacked on
   the origin. It also made the process forward its arguments and exit, leaving no pid.
 - **Each gate owns one window and replaces it**, recorded in
-  `$XDG_RUNTIME_DIR/vtp-viewer.json`. **Identity is the recorded argv, never the pid
+  `$XDG_RUNTIME_DIR/evee-viewer.json`. **Identity is the recorded argv, never the pid
   alone** — pids get reused, and closing a PrusaSlicer the human opened for their own work
   would be far worse than a stale window. Compare `/proc/<pid>/cmdline` before signalling.
 - **Do not read `/proc/<pid>/cmdline` straight after spawning** — until `execve` lands it
@@ -308,7 +308,7 @@ Each line is a thing that cost time to learn. None of them are obvious from the 
   noise while keeping the message naming the offending value.
 
 ### `notify.py`
-- **It is a separate process, and that is the design.** `python -m vtp.notify`, systemd
+- **It is a separate process, and that is the design.** `python -m evee.notify`, systemd
   user unit in `packaging/`. A poller inside the MCP server would die with the editor
   session — exactly when you have walked away and want telling.
 - **It only reads.** No public entry point takes anything that could move the machine.

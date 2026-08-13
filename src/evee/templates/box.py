@@ -69,7 +69,7 @@ from build123d import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from vtp.config import (
+from evee.config import (
     clearance as default_clearance,
     geometry_defaults,
     standoff_defaults,

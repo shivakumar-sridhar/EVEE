@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "vtp": {
+    "evee": {
       "command": ".venv/bin/python",
-      "args": ["-m", "vtp.server"]
+      "args": ["-m", "evee.server"]
     }
   }
 }

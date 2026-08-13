@@ -16,7 +16,7 @@ from typing import Callable
 from build123d import Part
 from pydantic import BaseModel
 
-from vtp.templates import box
+from evee.templates import box
 
 __all__ = ["TEMPLATE_REGISTRY", "TemplateSpec", "UnknownTemplateError", "get_template"]
 

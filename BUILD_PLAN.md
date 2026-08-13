@@ -62,7 +62,7 @@ Do not re-litigate these during implementation.
              │ MCP over stdio — JSON params only
              ▼
    ╔═════════════════════════════════════════════════════╗
-   ║ vtp MCP SERVER                    src/vtp/server.py  ║
+   ║ evee MCP SERVER                    src/evee/server.py  ║
    ║   list_templates()                        Phase 5    ║
    ║   design_part(template, params)           Phase 5    ║
    ║   slice_part(stl_path)                    Phase 5    ║
@@ -150,13 +150,13 @@ Two consequences to build to:
 ## Repo layout
 
 ```
-voice-to-print/
+EVEE/
 ├── CLAUDE.md                   # agent context (see appendix)
 ├── pyproject.toml
 ├── config/
 │   ├── ender3_v3se.ini         # dialed-in slicer profile — hand-tuned, not generated
 │   └── defaults.toml           # wall thickness, clearances, house rules
-├── src/vtp/
+├── src/evee/
 │   ├── templates/
 │   │   ├── __init__.py         # TEMPLATE_REGISTRY
 │   │   └── box.py              # first template
@@ -207,7 +207,7 @@ reference to port from.
 
 Goal: one hand-written, physically verified template. This is the ground truth everything else is debugged against.
 
-**Build `src/vtp/templates/box.py`:**
+**Build `src/evee/templates/box.py`:**
 
 ```python
 def box_with_lid(
@@ -226,7 +226,7 @@ Requirements:
 - Body and lid as separate solids, exported as separate STLs
 - Reject invalid geometry: `wall * 2 >= min(outer_l, outer_w)` → raise with a clear message
 
-**Also build `src/vtp/cad.py`:**
+**Also build `src/evee/cad.py`:**
 - `render_preview(stl_path) -> list[Path]` — two PNGs (isometric + top-down)
 - Use `trimesh` for loading. Headless rendering is fiddly; if `pyrender`/`pyglet` offscreen gives you trouble, fall back to matplotlib `mplot3d` plotting the mesh triangles. Crude is fine — this is for "does the shape look right," not beauty.
 
@@ -236,7 +236,7 @@ Requirements:
 
 ## Phase 2 — Slice pipeline (no LLM)
 
-`src/vtp/slicer.py`:
+`src/evee/slicer.py`:
 
 ```python
 def slice_stl(stl_path: Path, profile: Path, output: Path) -> SliceResult
@@ -253,7 +253,7 @@ def slice_stl(stl_path: Path, profile: Path, output: Path) -> SliceResult
 
 ## Phase 3 — Printer control
 
-`src/vtp/printer.py` — thin OctoPrint REST client. Auth via `X-Api-Key` header.
+`src/evee/printer.py` — thin OctoPrint REST client. Auth via `X-Api-Key` header.
 
 | Method | Endpoint |
 |---|---|
@@ -281,7 +281,7 @@ def slice_stl(stl_path: Path, profile: Path, output: Path) -> SliceResult
 
 ## Phase 4 — Parameter extraction (mostly deleted; see Phase 5)
 
-**Superseded.** This phase originally built `src/vtp/extract.py` around a local Qwen3 8B
+**Superseded.** This phase originally built `src/evee/extract.py` around a local Qwen3 8B
 via Ollama. With the MCP server as the product, the connecting CLI already has a model,
 and that model does extraction by reading the tool's JSON schema. A second model inside
 the server is a redundant hop.
@@ -293,7 +293,7 @@ now split:
 |---|---|
 | NL → template choice + params | the client CLI's model, against `model_json_schema()` |
 | Constrained decoding | the client's concern; the server does not trust it |
-| Schema validation | `src/vtp/templates/` Pydantic models — server-side, mandatory |
+| Schema validation | `src/evee/templates/` Pydantic models — server-side, mandatory |
 | Read-back sentence | already built: `resolved_spec_sentence()` in the template |
 | "needs clarification" branch | the CLI's own conversation; it can just ask |
 | "no template fits" branch | `UnknownTemplateError` from the registry |
@@ -340,7 +340,7 @@ asking the user rather than guessing.
 
 ## Phase 5 — MCP server + approval gates
 
-`src/vtp/server.py`. **This is the product** — everything above it is the user's choice
+`src/evee/server.py`. **This is the product** — everything above it is the user's choice
 of client and model. Tools exposed:
 
 - `list_templates()` → name → description, plus each template's JSON schema
@@ -389,7 +389,7 @@ The thing that makes this feel like an assistant rather than a script.
 Done as specified, and then deleted. Recorded here because the reasoning is the useful
 part, not the code.
 
-**What was built.** `src/vtp/voice/`: push-to-talk capture, faster-whisper for STT
+**What was built.** `src/evee/voice/`: push-to-talk capture, faster-whisper for STT
 (`base.en` on CPU — measured at ~11x realtime, which made the GPU and its >1GB of CUDA
 wheels unnecessary), Piper for TTS, and a persistent `ClaudeSDKClient` session so that
 *"make it 5mm taller"* resolved against the previous part. It worked: it designed a

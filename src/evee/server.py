@@ -32,7 +32,7 @@ accepted: the human no longer sees the file reach the printer before it commits,
 Every Python guard survived the change, and the two OctoPrint calls are still separate
 requests with ``print=false`` on the upload. Do not fold slicing in as well.
 
-**The print tools are thin.** Their guards live in :mod:`vtp.printer` as Python
+**The print tools are thin.** Their guards live in :mod:`evee.printer` as Python
 refusals, because a rule written only in a tool description is a rule the next client
 can talk its way past. What is written here is the same rule stated for the model's
 benefit, so it does not have to learn by being refused.
@@ -46,7 +46,7 @@ the plate unreachable — so the tool parks the head, which the button on the ma
 does not do.
 
 Parking is the only G-code this package emits, and it is a module constant in
-:mod:`vtp.printer`. No tool here takes a command string, and none should: a freeform
+:mod:`evee.printer`. No tool here takes a command string, and none should: a freeform
 G-code path would end the property that this server can only do the things it
 documents.
 """
@@ -59,14 +59,14 @@ from typing import Any
 from mcp.server import MCPServer
 from pydantic import ValidationError
 
-from vtp.cad import design
-from vtp.calibration import mesh_state
-from vtp.config import OUTPUT_DIR
-from vtp.printer import OctoPrintClient, PrinterError
-from vtp.slicer import SlicerError, slice_stl
-from vtp.templates import TEMPLATE_REGISTRY, UnknownTemplateError, get_template
-from vtp.templates.box import TemplateError
-from vtp.viewer import open_gcode, open_model
+from evee.cad import design
+from evee.calibration import mesh_state
+from evee.config import OUTPUT_DIR
+from evee.printer import OctoPrintClient, PrinterError
+from evee.slicer import SlicerError, slice_stl
+from evee.templates import TEMPLATE_REGISTRY, UnknownTemplateError, get_template
+from evee.templates.box import TemplateError
+from evee.viewer import open_gcode, open_model
 
 __all__ = ["build_server", "main"]
 
@@ -154,8 +154,8 @@ def _describe_error(exc: Exception) -> str:
 def build_server() -> MCPServer:
     """Construct the server. Separate from :func:`main` so tests can drive it."""
     server = MCPServer(
-        name="vtp",
-        title="Voice-to-Print CAD",
+        name="evee",
+        title="EVEE — Everyday Virtual Engineering Engine",
         instructions=_INSTRUCTIONS,
         version="0.1.0",
     )
@@ -615,7 +615,7 @@ def build_server() -> MCPServer:
 
 
 def main() -> None:
-    """Entry point for ``python -m vtp.server`` and for MCP client stdio launch."""
+    """Entry point for ``python -m evee.server`` and for MCP client stdio launch."""
     build_server().run(transport="stdio")
 
 

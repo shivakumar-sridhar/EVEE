@@ -10,6 +10,6 @@ __pycache__/
 *.bak
 !.env.example
 
-# Generated geometry — regenerate with vtp.cad.design()
+# Generated geometry — regenerate with evee.cad.design()
 output/*
 !output/.gitkeep

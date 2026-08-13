@@ -53,7 +53,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from vtp.config import gcode_viewer_settings, viewer_settings
+from evee.config import gcode_viewer_settings, viewer_settings
 
 __all__ = [
     "ViewerLaunch",
@@ -210,8 +210,8 @@ def _state_path() -> Path:
     """
     runtime = _runtime_dir()
     if runtime.is_dir() and os.access(runtime, os.W_OK):
-        return runtime / "vtp-viewer.json"
-    return Path(tempfile.gettempdir()) / f"vtp-viewer-{os.getuid()}.json"
+        return runtime / "evee-viewer.json"
+    return Path(tempfile.gettempdir()) / f"evee-viewer-{os.getuid()}.json"
 
 
 def _read_state() -> dict:
@@ -381,7 +381,7 @@ def open_model(
 
     Args:
         paths: Model files to show — normally the single review 3MF written by
-            :func:`vtp.cad.export_review_model`, which already holds every part
+            :func:`evee.cad.export_review_model`, which already holds every part
             laid out side by side. Passing the raw STLs instead works, but they
             are each centred on the origin in print pose and will occupy the same
             space; arranging them is the review file's whole job.

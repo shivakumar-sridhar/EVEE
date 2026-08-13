@@ -1,4 +1,4 @@
-# EVI — voice-to-print
+# EVEE — Everyday Virtual Engineering Engine
 
 Natural language → parametric CAD → sliced G-code → a physical print on an Ender-3 V3 SE.
 
@@ -48,7 +48,7 @@ use it.
   confirmation is the only thing between the call and a moving machine. Nothing is
   uploaded unless the bed is confirmed and the printer is already idle.
 
-These are enforced in code, not just in prompts. `src/vtp/printer.py` is where they
+These are enforced in code, not just in prompts. `src/evee/printer.py` is where they
 live; the MCP tool descriptions restate them so every client sees them, but the Python
 refusal is the mechanism.
 
@@ -59,7 +59,7 @@ refusal is the mechanism.
 A parametric box-with-lid template, exported to STL with preview renders:
 
 ```python
-from vtp.cad import design
+from evee.cad import design
 
 result = design("box_with_lid", dict(outer_l=50, outer_w=40, outer_h=20))
 print(result.summary())
@@ -81,8 +81,8 @@ Both parts come out in print orientation, sitting on Z=0, needing no supports.
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone git@github.com:shivakumar-sridhar/EVI.git
-cd EVI
+git clone git@github.com:shivakumar-sridhar/EVEE.git
+cd EVEE
 uv sync
 uv run pytest
 ```
@@ -101,7 +101,7 @@ required to run the suite.
 config/
   defaults.toml            house rules: wall thickness, clearances, fillets
   ender3_v3se.ini          hand-tuned slicer profile — the one file that is mine, not yours
-src/vtp/
+src/evee/
   config.py                reads defaults.toml and .env
   cad.py                   template dispatch -> STLs, plate, preview PNGs
   slicer.py                STL -> G-code + metadata
@@ -168,11 +168,11 @@ directory picks it up. Verify with `/mcp`.
 | | |
 |---|---|
 | command | `.venv/bin/python` |
-| args | `["-m", "vtp.server"]` |
+| args | `["-m", "evee.server"]` |
 | cwd | the repo root |
 | transport | stdio |
 
-Nothing Claude-specific is required. `python -m vtp.server` speaks MCP on its own.
+Nothing Claude-specific is required. `python -m evee.server` speaks MCP on its own.
 
 Seven tools, with a human decision between each step:
 
@@ -205,7 +205,7 @@ things you never said; the gate is in Python, where it applies to everyone.
 ## Notifications
 
 ```bash
-python -m vtp.notify --setup     # one command, start to finish
+python -m evee.notify --setup     # one command, start to finish
 ```
 
 Generates a private topic, walks you through subscribing in the
@@ -219,7 +219,7 @@ off the serial link mid-print.
 It runs as **its own process**, deliberately — not inside the MCP server. An MCP server
 is spawned by your editor and dies with the session, so a poller living in it would only
 notify you while you were sitting in front of it, which is when you least need telling.
-`packaging/vtp-notify.service` is a ready systemd user unit.
+`packaging/evee-notify.service` is a ready systemd user unit.
 
 The daemon only reads. It cannot start, stop or alter a print. It is also the only thing
 that records *how a print ended* — `print_finished` and `print_failed` land in

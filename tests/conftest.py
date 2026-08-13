@@ -19,15 +19,15 @@ from __future__ import annotations
 
 import pytest
 
-from vtp.viewer import ViewerLaunch
+from evee.viewer import ViewerLaunch
 
 
 @pytest.fixture(autouse=True)
 def no_viewer_windows(monkeypatch):
     """Stop the MCP tools from opening real windows during tests."""
     suppressed = ViewerLaunch(False, [], "suppressed during tests")
-    monkeypatch.setattr("vtp.server.open_model", lambda paths, **kwargs: suppressed)
-    monkeypatch.setattr("vtp.server.open_gcode", lambda path, **kwargs: suppressed)
+    monkeypatch.setattr("evee.server.open_model", lambda paths, **kwargs: suppressed)
+    monkeypatch.setattr("evee.server.open_gcode", lambda path, **kwargs: suppressed)
 
 
 @pytest.fixture(autouse=True)
@@ -41,8 +41,8 @@ def isolated_viewer_state(tmp_path_factory, monkeypatch):
     Returns the scratch path, so a test that wants to inspect or seed the
     bookkeeping asks for this fixture rather than patching it a second time.
     """
-    path = tmp_path_factory.mktemp("viewer-state") / "vtp-viewer.json"
-    monkeypatch.setattr("vtp.viewer._state_path", lambda: path)
+    path = tmp_path_factory.mktemp("viewer-state") / "evee-viewer.json"
+    monkeypatch.setattr("evee.viewer._state_path", lambda: path)
     return path
 
 
@@ -55,12 +55,12 @@ def offline_printer_credentials(monkeypatch):
     harmless; a bug in a ``start_print`` test would not be. ``.invalid`` is reserved
     by RFC 2606 and never resolves, so such a test fails loudly instead.
 
-    Patched on ``vtp.printer``, not ``vtp.config``: the module imports the name at
+    Patched on ``evee.printer``, not ``evee.config``: the module imports the name at
     import time, so patching the definition site leaves the already-bound reference
     pointing at the real credentials.
     """
     monkeypatch.setattr(
-        "vtp.printer.octoprint_settings",
+        "evee.printer.octoprint_settings",
         lambda: ("http://printer.invalid", "test-key"),
     )
 
@@ -73,7 +73,7 @@ def isolated_audit_log(tmp_path_factory, monkeypatch):
     test run must not appear in it.
     """
     path = tmp_path_factory.mktemp("audit") / "print_log.jsonl"
-    monkeypatch.setattr("vtp.printer.AUDIT_LOG", path)
+    monkeypatch.setattr("evee.printer.AUDIT_LOG", path)
     return path
 
 
@@ -90,11 +90,11 @@ def isolated_mesh_state(tmp_path_factory, monkeypatch):
     Returns the scratch path so a test can seed or inspect it.
     """
     path = tmp_path_factory.mktemp("mesh") / "bed_mesh.json"
-    monkeypatch.setattr("vtp.calibration.MESH_STATE", path)
+    monkeypatch.setattr("evee.calibration.MESH_STATE", path)
     return path
 
 
 @pytest.fixture(autouse=True)
 def no_post_command_sleep(monkeypatch):
     """Drop the settle delay after start/cancel. It exists for the human, not us."""
-    monkeypatch.setattr("vtp.printer.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("evee.printer.time.sleep", lambda _seconds: None)

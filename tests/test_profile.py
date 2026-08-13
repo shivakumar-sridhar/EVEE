@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from vtp.config import _profile_values, slicer_profile
+from evee.config import _profile_values, slicer_profile
 
 #: Where the prime line begins. Everything before the heat commands exists to get
 #: the nozzle here.
