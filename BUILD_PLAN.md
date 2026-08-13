@@ -1,12 +1,20 @@
 # Voice-to-Print Pipeline — Build Plan
 
+> **This is history, kept on purpose.** It is the original spec, written before any of
+> it existed, and it is the record of how the system was actually built — including the
+> parts it got wrong. **`CLAUDE.md` is the current truth and wins on every conflict.**
+>
+> Where the two disagree, that disagreement is usually the interesting part: Phase 4 was
+> deleted outright once the architecture changed, and Phase 7 was built, used, and then
+> removed. Both are marked in place rather than edited away.
+>
+> Do not treat anything here as a to-do list. The work is done.
+
 Agentic workflow: natural language part description → parametric CAD → approval → slice → approval → print on an Ender-3 V3 SE via a Raspberry Pi.
 
 **The MCP server is the product. The model is bring-your-own.** Everything above the
-server — voice, agent CLI, model provider — is swappable by the user. See
-[System design](#system-design).
-
-This document is the spec. Work through phases in order. **Do not skip ahead** — each phase produces a verified artifact the next phase depends on.
+server — the agent CLI, the model provider, and whatever turns speech into text — is
+swappable by the user. See [System design](#system-design).
 
 ---
 
@@ -38,9 +46,9 @@ Do not re-litigate these during implementation.
              │             ▲                  ▲
              ▼             │                  │
    ┌─────────────────────────────────────────────────────┐
-   │ VOICE FRONTEND                   (Phase 7, optional) │
-   │   faster-whisper STT  ──►  text                      │
-   │   Piper / Kokoro TTS  ◄──  text                      │
+   │ SPEECH — the client's, not ours    (was Phase 7)     │
+   │   /voice in Claude Code, or just type                │
+   │   built here once, then deleted — see Phase 7        │
    └─────────────────────────────────────────────────────┘
              │ text
              ▼
@@ -95,7 +103,7 @@ Do not re-litigate these during implementation.
 16  ▶ GATE 3  human supplies bed_confirmed_clear=True   NON-VOICE ONLY
 17  agent → start_print()  → OctoPrint → Ender-3 V3 SE
 18  background poller → ntfy push on done/fail          [Phase 6] DONE
-19  voice frontend → agent session, machine tools denied [Phase 7] DONE
+19  speech, if you want it, comes from the client        [Phase 7] REMOVED
 ```
 
 ### Trust boundaries
@@ -155,7 +163,6 @@ voice-to-print/
 │   ├── cad.py                  # template dispatch → STL + preview PNGs
 │   ├── slicer.py               # STL → G-code + metadata
 │   ├── printer.py              # OctoPrint REST client
-│   ├── extract.py              # OPTIONAL, Phase 7 only — NL → params without a CLI
 │   └── server.py               # MCP server exposing the tools
 ├── output/                     # generated STL / PNG / gcode, gitignored
 └── tests/
@@ -316,8 +323,9 @@ model could be anything.
 
 ### When `extract.py` comes back
 
-Only for a **standalone voice loop with no agent CLI in it** (see Phase 7). If voice
-drives Claude Code or another CLI, it is never needed. Do not build it speculatively.
+Only for a standalone frontend with no agent CLI behind it. Phase 7 was that frontend
+and it drove Claude Code, so it never needed one; it is gone now regardless. Do not
+build this speculatively.
 
 ### Eval set — still worth building
 
@@ -376,31 +384,30 @@ The thing that makes this feel like an assistant rather than a script.
 
 ---
 
-## Phase 7 — Voice (last, optional)
+## Phase 7 — Voice (last, optional) — BUILT, THEN REMOVED
 
-Only after 0–6 work reliably by text. Push-to-talk, not always-on wake word, for v1.
+Done as specified, and then deleted. Recorded here because the reasoning is the useful
+part, not the code.
 
-- `faster-whisper` (large-v3-turbo) for STT
-- Kokoro or Piper for TTS — **not Coqui XTTS**, which is abandoned and non-commercially licensed
+**What was built.** `src/vtp/voice/`: push-to-talk capture, faster-whisper for STT
+(`base.en` on CPU — measured at ~11x realtime, which made the GPU and its >1GB of CUDA
+wheels unnecessary), Piper for TTS, and a persistent `ClaudeSDKClient` session so that
+*"make it 5mm taller"* resolved against the previous part. It worked: it designed a
+40x30x15 box from speech, read the numbers back, and refused a print request in its own
+words.
 
-**Voice is a frontend that drives an agent CLI, not a second pipeline.** It converts
-speech to text, hands the text to the CLI, and speaks the reply. It does not talk to the
-MCP server directly and it does not need its own model. Two integration options:
+**Why it went.** The MCP client already does this — `/voice` in Claude Code puts a
+microphone in front of a session that has every tool here attached, plus web access.
+Maintaining 1,156 lines to reproduce a client feature is upkeep bought with nothing.
 
-| Option | How | Trade-off |
-|---|---|---|
-| Headless CLI calls | shell out per utterance (`claude -p …`) | Simplest. Each turn is largely standalone |
-| Persistent agent session | Claude Agent SDK, one long-lived session | Multi-turn works — *"make it 5mm taller"* resolves against the previous part. Preferred |
+**The constraint below survives the deletion, and that is the point.** Gate 3 was never
+safe because `voice/gate.py` denied `start_print` from a spoken session; it is safe
+because `bed_confirmed_clear` is checked with `is not True` in `printer.py`, is
+keyword-only, and no tool composes design into print. Those hold for any client,
+including one listening to a room. A safety property that depended on our own frontend
+would have died with it.
 
-The persistent-session path is what makes it feel like an assistant rather than a
-command line with a microphone. Verify the exact CLI/SDK surface when this phase
-starts rather than trusting the flags written here.
-
-Only if you want voice **without** any agent CLI does `extract.py` come back — a small
-local model doing NL → params directly against the template schema. Do not build that
-until it is actually needed.
-
-### Two hard constraints on the voice layer
+### Two hard constraints on any speech frontend
 
 - **Gate 1 needs a screen.** The point of that gate is looking at the preview render,
   and a 3D shape cannot be reviewed by ear. `resolved_spec_sentence` confirms the
@@ -408,8 +415,7 @@ until it is actually needed.
 - **Gate 3 must not be reachable from a transcript.** `bed_confirmed_clear` is supplied
   by a human through a non-voice channel — typed token, phone tap, physical button.
   Never inferred from ASR output. *"Sure, go ahead"* is a cheap utterance, STT
-  mishears, and the thing on the other end heats to 200°C. Voice may design and slice
-  freely; something else starts the print.
+  mishears, and the thing on the other end heats to 200C.
 
 ---
 
@@ -447,14 +453,13 @@ recording which phases are done and which Phase 1 decisions overrode the text ab
 
 One phase per session, and within a phase, one feature at a time on the human's call.
 The temptation is to let an agent build the whole thing at once, and then you are
-debugging a voice pipeline and a slicer config simultaneously with no known-good
-baseline.
+debugging two subsystems simultaneously with no known-good baseline.
 
-Phase 1 is done and physically verified. The next unblocked work is the Phase 5 vertical
-slice — `list_templates` + `design_part` only, no slicer, no printer. That proves an
-arbitrary MCP client can design a part end to end, which is the thesis this whole
-re-architecture rests on.
+That rhythm held, and it is the reason each phase has a verified artefact behind it
+rather than a plausible one. It is also the reason the start-G-code bug took four
+attempts instead of being caught early: a phase can be *complete* and still be wrong,
+if what verified it was the metadata rather than the printed object.
 
-Phases 2 and 3 stay blocked until Phase 0 is signed off: **no slicer installed on this
-machine and no `config/ender3_v3se.ini`.** That file must come from a hand-tuned
-PrusaSlicer export — never generated.
+The one rule from this section that still binds: **`config/ender3_v3se.ini` comes from a
+hand-tuned PrusaSlicer export, never generated.** Everything downstream of it inherits
+whatever is wrong with it, silently, and the G-code metadata will not say so.

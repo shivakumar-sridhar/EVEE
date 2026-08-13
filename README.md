@@ -3,12 +3,21 @@
 Natural language → parametric CAD → sliced G-code → a physical print on an Ender-3 V3 SE.
 
 Describe a part in a sentence, approve the geometry, approve the slice, and it prints.
-The pipeline is exposed as MCP tools, so the same interface works from a voice loop or
-from an agent like Claude Code.
+The pipeline is exposed as MCP tools, so any MCP client drives it — Claude Code,
+OpenCode, Cline, Zed. Speech, if you want it, comes from the client (`/voice` in Claude
+Code); nothing here listens.
 
-**Status: the whole pipeline works — speak, design, slice, print, and get told when it
-is done.** Seven MCP tools, three human gates, all enforced in Python.
-[`BUILD_PLAN.md`](BUILD_PLAN.md) is the full spec.
+**Status: the whole pipeline works — describe, design, slice, print, and get told when
+it is done.** Seven MCP tools, three human gates, all enforced in Python.
+
+**This is my workflow for my printer, published so you can take it apart.** It is not a
+product aiming to fit every setup. The machine is a specific Ender-3 V3 SE, the slicer
+profile is hand-tuned for it, and the numbers in `config/` came from printing things and
+looking at them. Clone it, point it at your machine, and re-verify — especially the
+slicer profile, which is the one file that will be wrong for you.
+
+[`BUILD_PLAN.md`](BUILD_PLAN.md) is the original spec, kept as history;
+[`CLAUDE.md`](CLAUDE.md) is what is actually true now.
 
 ---
 
@@ -81,20 +90,30 @@ uv run pytest
 `build123d` pulls in OpenCascade via prebuilt wheels — no source build, but it is a
 large download (~400MB).
 
-Nothing here talks to a printer, a slicer, or a network yet, so `uv sync` and `pytest`
-are safe to run on any machine.
+`uv sync` and `pytest` are safe to run on any machine: `tests/conftest.py` repoints the
+printer credentials at `printer.invalid` suite-wide, so no test can reach a real machine
+even by accident. Slicing and printing need PrusaSlicer and an OctoPrint host; neither is
+required to run the suite.
 
 ## Layout
 
 ```
-config/defaults.toml       house rules: wall thickness, clearances, fillets
+config/
+  defaults.toml            house rules: wall thickness, clearances, fillets
+  ender3_v3se.ini          hand-tuned slicer profile — the one file that is mine, not yours
 src/vtp/
-  config.py                reads defaults.toml
-  cad.py                   template dispatch -> STL + preview PNGs
-  templates/
-    __init__.py            TEMPLATE_REGISTRY
-    box.py                 box_with_lid
-output/                    generated artifacts (gitignored)
+  config.py                reads defaults.toml and .env
+  cad.py                   template dispatch -> STLs, plate, preview PNGs
+  slicer.py                STL -> G-code + metadata
+  viewer.py                opens the review windows for gates 1 and 2
+  printer.py               OctoPrint REST client and every print refusal
+  calibration.py           stored bed mesh state
+  notify.py                standalone poller -> ntfy push (separate process)
+  server.py                the MCP server
+  templates/box.py         box_with_lid
+reference/                 known-good artefacts kept as evidence
+output/                    generated STL / PNG / G-code (gitignored)
+packaging/                 systemd user unit for the notifier
 tests/
 ```
 
@@ -104,10 +123,16 @@ raise `clearance.press_fit` and regenerate. No code change.
 ## Design decisions worth knowing
 
 **The LLM never writes geometry.** Its entire job is natural language → JSON parameters
-for a template that a human already vetted. Every template's Pydantic model sets
-`extra="forbid"`, and that schema drives constrained decoding, so the model cannot emit
-malformed JSON or invent a parameter. The worst failure mode is a slightly wrong number,
-which the first approval gate catches.
+for a template that a human already vetted. The worst failure mode is a slightly wrong
+number, which the first approval gate catches.
+
+**Server-side validation is the only guarantee, not the client's decoder.** An earlier
+version of this plan leaned on constrained decoding to stop a model inventing a field.
+That was wrong: the client is arbitrary and we do not control its decoder. Every
+template's Pydantic model sets `extra="forbid"` and runs cross-field checks, and *that*
+is what rejects a bad parameter — for every client, including one whose decoder does
+nothing. The error messages name the offending value, because they are the model's only
+signal for correcting itself.
 
 **Read-back sentences are templated in Python, not written by the model.** That
 guarantees the sentence describes what will actually be built rather than what the model
@@ -161,30 +186,21 @@ Seven tools, with a human decision between each step:
 | `cancel_print(confirmed)` | stops the running job and parks the head so the plate can be cleaned | — |
 | `calibrate_bed(bed_confirmed_clear)` | probes the bed once and stores the mesh, so later prints skip the probe | — |
 
-## Voice
+## Speech
 
-```bash
-uv sync --extra voice
-python -m vtp.voice          # push-to-talk; --text to type, --quiet to not be spoken to
-```
+There is nothing to install. Use your client's own speech input — `/voice` in Claude
+Code — and talk to it exactly as you would type.
 
-Push-to-talk, not a wake word: nothing is recorded until you press space, and space
-again ends the utterance. (A terminal cannot detect a key being *released*, so
-hold-to-talk would need raw `/dev/input` access and the `input` group; two taps needs
-neither.) Speech recognition is faster-whisper and synthesis is Piper, both local and
-both on CPU — `base.en` transcribes a 4.6-second utterance in 0.4s, so the GPU is not
-needed.
+This repo did ship a push-to-talk frontend once (faster-whisper, Piper, a persistent
+Agent SDK session). It worked and it was removed: the client already does it, and
+reproducing it here bought nothing.
 
-**A voice session cannot start, cancel, or calibrate.** Those tools are denied by
-`src/vtp/voice/gate.py` before they run, through the Agent SDK's permission callback —
-a Python refusal, not a line in a prompt. A bed confirmation has to come from a human
-who has looked at the plate, and *"sure, go ahead"* is a cheap utterance that speech
-recognition can produce from something you never said. Voice designs and slices; a
-person starts the print.
-
-It degrades rather than refusing to run: no microphone means typed input, no voice model
-means printed replies, and every reply is printed as well as spoken so a misheard
-dimension has something to check against.
+**Crucially, no safety property left with it.** A spoken session cannot start a print
+because `bed_confirmed_clear` is checked with `is not True` in `printer.py`, is
+keyword-only, and no tool composes design into print — not because some frontend of ours
+filtered the tool list. Those checks hold for any client, including one listening to a
+room. *"Sure, go ahead"* is a cheap utterance and speech recognition will produce it from
+things you never said; the gate is in Python, where it applies to everyone.
 
 ## Notifications
 
@@ -228,14 +244,17 @@ parameter, and nothing combines design, slicing and printing.
 | 3 | OctoPrint REST client | ☑ |
 | 4 | ~~LLM parameter extraction~~ — superseded, the client's model does this | — |
 | 5 | MCP server + the three approval gates | ☑ |
-| 6 | Async completion notification | ☐ |
-| 7 | Voice, push-to-talk | ☐ |
+| 6 | Async completion notification | ☑ |
+| 7 | ~~Voice, push-to-talk~~ — built, then removed for the client's own | — |
 
-Phases 0–2 are verified physically, not just in tests: a BNO085 sensor case was
-designed here, sliced with `config/ender3_v3se.ini`, and printed successfully. The
-Phase 3 client is verified against the live machine for every read and for upload, and
-for each refusal path; the one thing not exercised end to end is a print actually
-started by `start_print`, which is a human's call to make.
+Verified physically, not just in tests: a BNO085 sensor case was designed here, sliced
+with `config/ender3_v3se.ini`, and printed. Prints have been started, cancelled and
+completed through these tools against the live machine, and every refusal path has been
+exercised.
+
+The slicer profile's start sequence took four attempts to get right, and the story is
+worth reading before you trust your own: see `CLAUDE.md` § The machine and its profile,
+and `reference/cura_BNO_Case.gcode`, which is the known-good print that settled it.
 
 `start_print` originally split into `upload_gcode` and `start_print` so a human could
 see the file reach the printer before committing. That was folded back into one call on
