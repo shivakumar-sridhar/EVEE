@@ -199,6 +199,58 @@ class StandoffSpec(BaseModel):
     )
 
 
+class LidPostSpec(BaseModel):
+    """One post hanging from the underside of the lid, with a screw hole through it.
+
+    This is what turns a press-fit lid into a fastened one **without touching the
+    body**. A plain hole in the lid secures nothing: the lid's inner face sits at the
+    cavity rim while the board sits down on the floor standoffs, so a screw dropped
+    through it spans air and tightening pulls on nothing. A post bridges that gap, and
+    the screw then clamps one solid stack — lid, post, board, standoff — with a single
+    fastener.
+
+    Positions use the same convention as :class:`StandoffSpec`: measured from the
+    centre, so a post at the same ``(x, y)`` as a floor standoff lands directly above
+    it, which is the arrangement this exists for.
+
+    ``length`` is measured from the lid's inner face, and should stop just short of the
+    board rather than resting on it. **Err short.** A post 0.3mm shy leaves the board a
+    little play; a post 0.3mm long stops the lid seating on the rim at all, and there is
+    no way to tell by looking.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(
+        description="Post centre in mm along X, measured from the lid centre."
+    )
+    y: float = Field(
+        description="Post centre in mm along Y, measured from the lid centre."
+    )
+    length: float = Field(
+        gt=0,
+        description=(
+            "How far the post reaches below the lid's inner face, in mm. Size it to "
+            "stop just short of the board: cavity depth minus standoff height minus "
+            "board thickness, less about 0.3mm."
+        ),
+    )
+    diameter: float = Field(
+        default_factory=lambda: standoff_defaults()["diameter"],
+        gt=0,
+        description="Outer diameter of the post in mm.",
+    )
+    hole_diameter: float = Field(
+        default=2.8,
+        gt=0,
+        description=(
+            "Clearance hole through the post and the lid, in mm. A clearance hole, not "
+            "a pilot: the screw must turn freely here and bite only in the body's "
+            "standoff. 2.8mm suits M2.5, 2.3mm suits M2."
+        ),
+    )
+
+
 class BoxWithLidParams(BaseModel):
     """Validated parameters for :func:`box_with_lid`.
 
@@ -260,6 +312,15 @@ class BoxWithLidParams(BaseModel):
         ),
     )
 
+    lid_posts: list[LidPostSpec] = Field(
+        default_factory=list,
+        description=(
+            "Posts under the lid with screw holes through them, so one screw holds "
+            "the lid, the board and the base together. Put each at the same (x, y) as "
+            "a floor standoff."
+        ),
+    )
+
     @model_validator(mode="after")
     def _check_geometry(self) -> "BoxWithLidParams":
         _validate(
@@ -286,6 +347,7 @@ def _validate(
     lip_height: float,
     ports: "list[PortSpec] | None" = None,
     standoffs: "list[StandoffSpec] | None" = None,
+    lid_posts: "list[LidPostSpec] | None" = None,
 ) -> None:
     """Cross-field checks. Raises :class:`TemplateError` naming the bad values.
 
@@ -339,9 +401,13 @@ def _validate(
         _validate_port(index, port, outer_l, outer_w, outer_h, wall, fillet)
 
     standoffs = list(standoffs or ())
+    lid_posts = list(lid_posts or ())
     for index, standoff in enumerate(standoffs):
         _validate_standoff(index, standoff, outer_l, outer_w, outer_h, wall, lip_height)
     _validate_standoffs_disjoint(standoffs)
+    for index, post in enumerate(lid_posts):
+        _validate_lid_post(index, post, outer_l, outer_w, outer_h, wall, clearance)
+    _validate_lid_posts_disjoint(lid_posts)
 
 
 def _validate_port(
@@ -446,6 +512,60 @@ def _validate_standoff(
         )
 
 
+def _validate_lid_post(
+    index: int,
+    post: "LidPostSpec",
+    outer_l: float,
+    outer_w: float,
+    outer_h: float,
+    wall: float,
+    clearance: float,
+) -> None:
+    """Reject a lid post that cannot be printed or would stop the lid closing."""
+    where = f"lid_posts[{index}] at ({_fmt(post.x)}, {_fmt(post.y)})"
+
+    # The post has to sit within the lip's footprint. Outside it, the post would be
+    # over the rim or the wall and the lid simply would not go down.
+    lip_l = outer_l - 2 * wall - 2 * clearance
+    lip_w = outer_w - 2 * wall - 2 * clearance
+    half = post.diameter / 2
+    if abs(post.x) + half > lip_l / 2 or abs(post.y) + half > lip_w / 2:
+        raise TemplateError(
+            f"{where}: a {post.diameter}mm post reaches past the lid's lip "
+            f"({_fmt(lip_l)}x{_fmt(lip_w)}mm), so it would land on the rim and hold "
+            f"the lid open. Move it toward the centre or reduce diameter"
+        )
+
+    cavity_depth = outer_h - wall
+    if post.length > cavity_depth:
+        raise TemplateError(
+            f"{where}: a {post.length}mm post is deeper than the {_fmt(cavity_depth)}mm "
+            f"cavity, so it would hit the floor before the lid seats "
+            f"(shorten it, or raise outer_h={outer_h}mm)"
+        )
+
+    if post.hole_diameter + 2 * _MIN_BOSS_WALL > post.diameter:
+        raise TemplateError(
+            f"{where}: a {post.hole_diameter}mm hole in a {post.diameter}mm post "
+            f"leaves under {_MIN_BOSS_WALL}mm of wall per side (need diameter >= "
+            f"{_fmt(post.hole_diameter + 2 * _MIN_BOSS_WALL)}mm)"
+        )
+
+
+def _validate_lid_posts_disjoint(posts: "list[LidPostSpec]") -> None:
+    """Reject posts that intersect each other — a merged blob is not a mount."""
+    for i, first in enumerate(posts):
+        for j, second in enumerate(posts[i + 1 :], start=i + 1):
+            gap = ((first.x - second.x) ** 2 + (first.y - second.y) ** 2) ** 0.5
+            if gap < (first.diameter + second.diameter) / 2:
+                raise TemplateError(
+                    f"lid_posts[{i}] at ({_fmt(first.x)}, {_fmt(first.y)}) and "
+                    f"lid_posts[{j}] at ({_fmt(second.x)}, {_fmt(second.y)}) are "
+                    f"{_fmt(gap)}mm apart and would merge into one blob "
+                    f"(need at least {_fmt((first.diameter + second.diameter) / 2)}mm)"
+                )
+
+
 def _validate_standoffs_disjoint(standoffs: "list[StandoffSpec]") -> None:
     """Reject posts that intersect each other — a merged blob is not a mount."""
     for i, first in enumerate(standoffs):
@@ -503,6 +623,7 @@ def resolved_spec_sentence(params: BoxWithLidParams) -> str:
         f"Usable interior {_fmt(inner_l)}x{_fmt(inner_w)}x{_fmt(inner_h)}mm."
         f"{_ports_phrase(params.ports)}"
         f"{_standoffs_phrase(params.standoffs, inner_h, params.lip_height)}"
+        f"{_lid_posts_phrase(params.lid_posts)}"
     )
 
 
@@ -521,6 +642,29 @@ def _ports_phrase(ports: list[PortSpec]) -> str:
         described.append(text)
     noun = "opening" if len(ports) == 1 else "openings"
     return f" Wall {noun}: " + "; ".join(described) + "."
+
+
+def _lid_posts_phrase(posts: "list[LidPostSpec]") -> str:
+    """The lid-post half of the read-back.
+
+    Says the screw length, because that is the number somebody has to go and buy and
+    it is not any of the dimensions they typed. It is the sum of what the screw passes
+    through, which is not obvious from the part on screen.
+    """
+    if not posts:
+        return ""
+
+    listed = "; ".join(
+        f"({_fmt(post.x)}, {_fmt(post.y)}) {_fmt(post.diameter)}mm dia x "
+        f"{_fmt(post.length)}mm long, {_fmt(post.hole_diameter)}mm clearance hole"
+        for post in posts
+    )
+    deepest = max(post.length for post in posts)
+    return (
+        f" {len(posts)} lid post{'s' if len(posts) != 1 else ''} reaching down from "
+        f"the lid: {listed}. Screws pass right through the lid and bite in the body's "
+        f"standoffs, so allow about {_fmt(deepest + 4)}mm of screw."
+    )
 
 
 def _standoffs_phrase(
@@ -596,6 +740,31 @@ def _port_cutter(
     return cutter.locate(Location((centre[0], centre[1], wall + port.z_offset)))
 
 
+def _lid_post(post: "LidPostSpec", wall: float) -> Part:
+    """The post itself, rising from the lid's inner face in print orientation.
+
+    The lid prints plate-down with its lip pointing +Z, so a post points the same way
+    and needs no support. Where it overlaps the lip it simply unions with it.
+    """
+    return Cylinder(
+        radius=post.diameter / 2, height=post.length, align=_ON_BED
+    ).locate(Location((post.x, post.y, wall)))
+
+
+def _lid_post_hole(post: "LidPostSpec", wall: float) -> Part:
+    """The clearance hole, drilled through the post *and* the lid plate.
+
+    All the way through, unlike a standoff's blind pilot: the screw head has to land
+    on the outside of the lid, so this is the one hole in the design that is meant to
+    come out the other side.
+    """
+    return Cylinder(
+        radius=post.hole_diameter / 2,
+        height=wall + post.length + 2 * _OVERCUT,
+        align=_ON_BED,
+    ).locate(Location((post.x, post.y, -_OVERCUT)))
+
+
 def _standoff_post(standoff: StandoffSpec, wall: float) -> Part:
     """The post itself, sunk into the floor so the union has no coincident face.
 
@@ -633,6 +802,7 @@ def box_with_lid(
     lip_height: float | None = None,
     ports: list[PortSpec] | None = None,
     standoffs: list[StandoffSpec] | None = None,
+    lid_posts: list[LidPostSpec] | None = None,
 ) -> tuple[Part, Part]:
     """Build a box body and a matching press-fit lid.
 
@@ -666,8 +836,18 @@ def box_with_lid(
 
     ports = list(ports or ())
     standoffs = list(standoffs or ())
+    lid_posts = list(lid_posts or ())
     _validate(
-        outer_l, outer_w, outer_h, wall, clearance, fillet, lip_height, ports, standoffs
+        outer_l,
+        outer_w,
+        outer_h,
+        wall,
+        clearance,
+        fillet,
+        lip_height,
+        ports,
+        standoffs,
+        lid_posts,
     )
 
     inner_l = outer_l - 2 * wall
@@ -706,6 +886,13 @@ def box_with_lid(
     lip = _fillet_vertical(Box(lip_l, lip_w, lip_height, align=_ON_BED), lip_fillet)
     lid = plate + lip.locate(Location((0, 0, wall)))
 
+    # Same order as the body: every post on first, then every hole drilled, so a
+    # post is never left with a half-cut bore because a later boolean landed on it.
+    for post in lid_posts:
+        lid = lid + _lid_post(post, wall)
+    for post in lid_posts:
+        lid = lid - _lid_post_hole(post, wall)
+
     return body, lid
 
 
@@ -722,4 +909,5 @@ def build(params: BoxWithLidParams) -> tuple[Part, Part]:
         lip_height=params.lip_height,
         ports=params.ports,
         standoffs=params.standoffs,
+        lid_posts=params.lid_posts,
     )

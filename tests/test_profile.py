@@ -43,17 +43,63 @@ def test_the_nozzle_never_lifts_to_z50(start_gcode: str):
     assert "Z50" not in start_gcode
 
 
-def test_it_waits_for_temperature_close_to_the_plate(start_lines: list[str]):
-    """Cura's behaviour: be near the bed before the heaters are waited on.
+def test_it_parks_away_from_where_the_prime_line_starts(start_lines: list[str]):
+    """The blob forms wherever the nozzle waits, so it must not wait on the prime line.
 
-    Ooze pinned against the plate is a smear the prime line wipes away. Ooze from
-    50mm up is a string that lands wherever it likes.
+    Waiting at 2mm stopped ooze free-falling, but at that height it piles into a blob
+    and welds to the nozzle instead. Parking at Y150 puts that blob at the far end of
+    the lane, where nothing afterwards goes.
     """
-    approach = start_lines.index("G1 Z2.0 F240 ; wait near the plate, not 50mm above the prime line")
+    park = next(i for i, line in enumerate(start_lines) if line.startswith("G1 X2.0 Y150"))
     wait_for_nozzle = next(
         i for i, line in enumerate(start_lines) if line.startswith("M109 ")
     )
-    assert approach < wait_for_nozzle
+    assert park < wait_for_nozzle, "the park has to happen before the wait it exists for"
+
+
+def test_no_prime_move_returns_to_the_park_point(start_lines: list[str]):
+    """The documented failure this whole change exists for.
+
+    The old second prime line ran back to Y10 — the spot the nozzle had been sitting
+    on — and picked the blob straight back up. Nothing may end at the park Y again.
+    """
+    park_y = 150.0
+    for line in start_lines:
+        if not line.startswith("G1 ") or " Y" not in line:
+            continue
+        y = float(line.split(" Y")[1].split()[0])
+        assert y <= park_y, f"{line!r} goes past the park point at Y{park_y:g}"
+
+    extruding = [line for line in start_lines if "prime the nozzle" in line]
+    ends = [float(line.split(" Y")[1].split()[0]) for line in extruding]
+    assert max(ends) < park_y, "a prime line ends on the blob"
+
+
+def test_a_retract_precedes_the_temperature_wait(start_lines: list[str]):
+    """Pulls the melt back up the nozzle so less escapes during M190/M109."""
+    retract = next(i for i, line in enumerate(start_lines) if line.startswith("G1 E-"))
+    wait = next(i for i, line in enumerate(start_lines) if line.startswith("M109 "))
+    assert retract < wait
+
+
+def test_the_purge_is_deliberate_and_then_abandoned(start_lines: list[str]):
+    """Whatever cooked during the probe comes out on purpose, at the park spot, and
+    the head lifts clear before travelling — otherwise it drags the blob along the bed
+    to the prime start, which is the original bug with extra steps."""
+    purge = next(i for i, line in enumerate(start_lines) if line.startswith("G1 E6"))
+    lift = next(
+        i for i, line in enumerate(start_lines) if line.startswith("G1 Z1.0") and i > purge
+    )
+    travel = next(
+        i for i, line in enumerate(start_lines) if line.startswith("G1 X2.0 Y140") and i > purge
+    )
+    assert purge < lift < travel
+
+
+def test_the_pointless_warmup_dwell_is_gone(start_gcode: str):
+    """30 seconds of a hot nozzle doing nothing. M104 does not block and G28+G29 take
+    minutes, so the dwell bought no warmth — only ooze."""
+    assert "G4 S30" not in start_gcode
 
 
 def test_the_head_lifts_and_wipes_after_priming(start_lines: list[str]):
@@ -63,12 +109,10 @@ def test_the_head_lifts_and_wipes_after_priming(start_lines: list[str]):
 
 
 def test_both_prime_lines_survive(start_lines: list[str]):
-    """The fix reorders and appends. It must not have eaten the priming itself."""
-    primes = [line for line in start_lines if line.endswith("; prime the nozzle")]
-    assert primes == [
-        "G1 X2.0 Y140 E10 F1500 ; prime the nozzle",
-        "G1 X2.3 Y10 E10 F1200 ; prime the nozzle",
-    ]
+    """The fix reorders and rewrites. It must not have eaten the priming itself."""
+    primes = [line for line in start_lines if "prime the nozzle" in line]
+    assert len(primes) == 2, primes
+    assert all(" E" in line for line in primes), "a prime line that extrudes nothing"
 
 
 def test_homing_and_levelling_are_still_there(start_lines: list[str]):

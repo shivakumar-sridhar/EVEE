@@ -47,8 +47,9 @@ descriptions. If you ever find one holding only because of this file, that is th
 - Always report resolved inner dimensions alongside outer
 
 ## Slicing
-- Only use `config/ender3_v3se.ini`. It is hand-tuned and physically verified, including
-  the 2026-08-12 ooze fix — see § The machine. Do not generate slicer configs.
+- Only use `config/ender3_v3se.ini`. It is hand-tuned. Do not generate slicer configs.
+  Its `start_gcode` was rewritten 2026-08-13 to fix the prime-line blob, so it is not
+  currently *physically* verified — see § The machine.
 - `slice_part` exposes **no profile parameter** — that is the enforcement, not this bullet.
   It exposes no levelling parameter either: whether the stored mesh is used is *state*,
   decided by `calibration.mesh_state()`, never a knob a client can turn.
@@ -372,10 +373,40 @@ identical, time 38m10s → 37m46s. The 24s is the `Z50` round-trip at F240 that 
 happens; no extrusion changed. **`tests/test_profile.py` guards all of it**, including
 that `Z50` never comes back.
 
-**Re-verified 2026-08-12.** `bno085_case_v2_plate.gcode` ran to 100% on the fixed
-profile — body and lid together, 56m 56s — and the owner confirmed the first layer
-looked good while it printed. That is the watch the lapse was waiting for, so the
-profile is physically verified again, now including the ooze fix and the plate.
+**Re-verified 2026-08-12, and that verification was not enough — see below.**
+`bno085_case_v2_plate.gcode` ran to 100% on the fixed profile — body and lid together,
+56m 56s — and the owner confirmed the first layer looked good while it printed.
+
+**The prime-line blob — fixed 2026-08-13, superseding the Z2.0 fix above.** Dropping the
+wait from Z50 to Z2.0 stopped ooze free-falling onto the prime line and replaced it with
+something worse: at 2mm the drool has nowhere to go, piles into a blob, and welds itself
+to the nozzle. A lid print was cancelled five minutes in because that blob survived both
+prime lines and wrecked the first layer.
+
+Three faults compounded, and the geometry was the whole of it:
+
+- **The nozzle waited at `X2.0 Y10` — the exact start of the prime line.** The blob formed
+  precisely where printing begins.
+- **The first prime line started inside it**, running *from* Y10.
+- **The second ran back to Y10**, so even a clean first pass picked the blob up on the
+  return. This is a named failure on the forums, not a subtle one.
+
+The fix is entirely positional: park at `Y150`, the far end of the lane; retract 2mm
+before the wait; purge 6mm *on purpose* at the park spot; lift to Z1.0 before travelling
+so the blob is not dragged; then draw both lines away from it (`Y140→Y20`, `Y20→Y110`) so
+nothing ever returns. `G4 S30` also went — a 30-second dwell captioned "partial nozzle
+warmup" that bought no warmth, since `M104` does not block and `G28`+`G29` take minutes.
+
+**The nozzle is warm for ~187 seconds** — measured, not guessed: the plate print ran 3416s
+against a 3229s estimate, and PrusaSlicer never counts `start_gcode`. Cura is hot for
+about 30 seconds, which is why this never happened there. The CR Touch probes with its own
+pin and needs no nozzle heat at all; probing cold would remove the ooze window entirely,
+at ~60–90s per print. **Owner chose to keep the warm schedule and fix the geometry.**
+
+**A completed print is not proof of a clean start.** The plate print finished, was watched,
+and was signed off — and still had this defect. Its first layer simply happened to survive
+the blob. Watch the *first two minutes* specifically: the blob should appear at the rear of
+the prime lane and stay there.
 
 **PrusaSlicer's time estimate is accurate; OctoPrint's mid-print estimate is not.**
 Worth writing down because it caused a false alarm. At 15% the web UI claimed 1h 41m

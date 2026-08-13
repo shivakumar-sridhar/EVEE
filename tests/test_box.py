@@ -535,3 +535,94 @@ def test_params_model_rejects_the_same_geometry():
 def test_sliding_lid_is_deferred_not_silently_wrong():
     with pytest.raises(NotImplementedError, match="press_fit"):
         box_with_lid(**{**EXPLICIT, "lid_style": "sliding"})
+
+
+# --------------------------------------------------------------------------- #
+# Lid posts
+#
+# The feature that turns a press-fit lid into a fastened one WITHOUT touching the
+# body — which matters because the body may already be printed. A plain hole in
+# the lid secures nothing: the lid's inner face is at the cavity rim while the
+# board sits on the floor standoffs, so the screw would span air.
+# --------------------------------------------------------------------------- #
+
+from vtp.templates.box import LidPostSpec
+
+CASE = dict(outer_l=30.6, outer_w=27.7, outer_h=14.0, wall=2.0)
+CORNERS = [(sx * 10.16, sy * 8.89) for sx in (-1, 1) for sy in (-1, 1)]
+
+
+def _posts(length=7.1, diameter=5.0, **kw):
+    return [LidPostSpec(x=x, y=y, length=length, diameter=diameter, **kw) for x, y in CORNERS]
+
+
+def test_posts_extend_the_lid_downward_by_their_length():
+    _, plain = box_with_lid(**CASE)
+    _, posted = box_with_lid(**CASE, lid_posts=_posts())
+
+    # 2mm plate + 7.1mm post; the 3mm lip is swallowed by the taller post.
+    assert posted.bounding_box().size.Z == pytest.approx(2.0 + 7.1, abs=0.01)
+    assert plain.bounding_box().size.Z == pytest.approx(5.0, abs=0.01)
+    # Footprint is unchanged — posts live inside the lip, not outside the plate.
+    assert posted.bounding_box().size.X == pytest.approx(plain.bounding_box().size.X, abs=0.01)
+
+
+def test_posts_do_not_touch_the_body():
+    """The whole point: a lid you can fasten to a body that is already printed."""
+    plain_body, _ = box_with_lid(**CASE)
+    posted_body, _ = box_with_lid(**CASE, lid_posts=_posts())
+    assert posted_body.volume == pytest.approx(plain_body.volume, rel=1e-9)
+
+
+def test_the_hole_goes_all_the_way_through():
+    """Unlike a standoff's blind pilot. The screw head has to land outside the lid,
+    so this is the one hole in the design meant to come out the other side."""
+    _, plain = box_with_lid(**CASE)
+    _, posted = box_with_lid(**CASE, lid_posts=_posts())
+
+    # Added material is post-beyond-lip minus four through-holes. If the bores were
+    # blind, the volume would come out higher than this.
+    added_post = 4 * math.pi * 2.5**2 * (7.1 - 3.0)
+    drilled = 4 * math.pi * 1.4**2 * (2.0 + 7.1)
+    assert posted.volume - plain.volume == pytest.approx(added_post - drilled, rel=0.02)
+
+
+def test_a_post_reaching_past_the_lip_is_refused():
+    """Outside the lip it would land on the rim and hold the lid open — and you
+    cannot see that until the lid will not close."""
+    with pytest.raises(TemplateError, match="past the lid's lip"):
+        box_with_lid(**CASE, lid_posts=[LidPostSpec(x=13.0, y=0, length=7.1, diameter=5.0)])
+
+
+def test_a_post_deeper_than_the_cavity_is_refused():
+    with pytest.raises(TemplateError, match="deeper than"):
+        box_with_lid(**CASE, lid_posts=[LidPostSpec(x=0, y=0, length=20.0, diameter=5.0)])
+
+
+def test_a_clearance_hole_that_would_split_the_post_is_refused():
+    """Caught for real: a 2.8mm M2.5 clearance hole in the 4mm default post leaves
+    0.6mm of wall per side."""
+    with pytest.raises(TemplateError, match="leaves under"):
+        box_with_lid(**CASE, lid_posts=[LidPostSpec(x=0, y=0, length=7.1, diameter=4.0)])
+
+
+def test_overlapping_posts_are_refused():
+    with pytest.raises(TemplateError, match="merge into one blob"):
+        box_with_lid(
+            **CASE,
+            lid_posts=[
+                LidPostSpec(x=0, y=0, length=7.1, diameter=5.0),
+                LidPostSpec(x=2.0, y=0, length=7.1, diameter=5.0),
+            ],
+        )
+
+
+def test_posts_sit_directly_over_the_floor_standoffs():
+    """The arrangement the feature exists for: one screw through lid, board and post
+    into the standoff below it."""
+    stand = [StandoffSpec(x=x, y=y) for x, y in CORNERS]
+    body, lid = box_with_lid(**CASE, standoffs=stand, lid_posts=_posts())
+
+    assert body.volume > 0 and lid.volume > 0
+    # Same centres, so the screw axis is shared.
+    assert {(s.x, s.y) for s in stand} == {(p.x, p.y) for p in _posts()}
