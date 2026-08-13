@@ -188,7 +188,7 @@ matching how this repo already treats the profile. The Cura start G-code is the
 reference to port from.
 
 > **The original claim was right — my 2026-08-12 "correction" was wrong, reverted
-> 2026-08-13.** `M420 S1` really is the load-bearing line. `output/BNO_Case.gcode`, the
+> 2026-08-13.** `M420 S1` really is the load-bearing line. `reference/cura_BNO_Case.gcode`, the
 > Cura print that worked, homes and then loads a saved mesh with no `G29` at all; probing
 > fresh on every print is what cost ~187 seconds of warm nozzle and three failed prints.
 > `slicer.py` injects `M420 S1` into the exported G-code once `calibrate_bed` has stored

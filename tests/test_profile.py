@@ -8,10 +8,10 @@ is load-bearing in ways nothing else would catch.
 hot.** Four cancelled prints were spent on the alternative: park somewhere safe,
 reach temperature, then travel to the prime line. Every one of those travels is
 time in which ooze collects and gets carried, and the blob welded itself to the
-nozzle each time. ``output/BNO_Case.gcode`` — a Cura print of this same part on
-this same machine that came out clean — does none of it: it moves to the prime
-start *first*, heats there, and the very next command draws the line. This file
-pins that ordering.
+nozzle each time. ``reference/cura_BNO_Case.gcode`` — a Cura print of this same
+part on this same machine that came out clean — does none of it: it moves to the
+prime start *first*, heats there, and the very next command draws the line. This
+file pins that ordering.
 
 **``G29 ; auto bed levelling`` is an anchor, not just a command.** It is the string
 the stored-mesh substitution matches on, so its exact spelling is part of an
