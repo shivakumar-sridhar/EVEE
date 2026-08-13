@@ -187,12 +187,12 @@ chosen for automation because its CLI is stable and its config is a single flat 
 matching how this repo already treats the profile. The Cura start G-code is the
 reference to port from.
 
-> **Corrected 2026-08-12.** This paragraph used to call `M420 S1` (use saved mesh
-> levelling) "the load-bearing line a stock Ender-3 profile will not have". It is not in
-> the verified profile and never was — `config/ender3_v3se.ini` probes fresh with `G29`
-> on every print, which is what the physically verified print did. `M420 S1` is now
-> injected into the *exported G-code* by `slicer.py`, and only when `calibrate_bed` has
-> actually stored a mesh. See CLAUDE.md § Bed levelling.
+> **The original claim was right — my 2026-08-12 "correction" was wrong, reverted
+> 2026-08-13.** `M420 S1` really is the load-bearing line. `output/BNO_Case.gcode`, the
+> Cura print that worked, homes and then loads a saved mesh with no `G29` at all; probing
+> fresh on every print is what cost ~187 seconds of warm nozzle and three failed prints.
+> `slicer.py` injects `M420 S1` into the exported G-code once `calibrate_bed` has stored
+> a mesh. See CLAUDE.md § Bed levelling.
 
 ---
 

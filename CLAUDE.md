@@ -325,13 +325,31 @@ The first verified print came out of **Cura 5.13.0**, which proves the machine a
 geometry but gives no automatable profile. PrusaSlicer was chosen for automation because
 its CLI is stable and its config is one flat `.ini`.
 
-**Bed levelling — corrected 2026-08-11.** An earlier version of this file said `M420 S1`
-(load saved mesh) was load-bearing in the profile. It is not there, and it is not
-needed: `config/ender3_v3se.ini` runs `G28 ; home all axis` then `G29 ; auto bed
-levelling` in `start_gcode`, probing the CR Touch fresh on every print. That is what the
-physically verified print did. `M420 S1` is the alternative — faster, but it depends on
-a mesh having been stored with `G29` + `M500` beforehand. Do not "fix" the profile by
-adding it; the levelling is already handled.
+**Bed levelling — the note here has now been flipped twice. Read the evidence, not the
+note.** On 2026-08-11 this file said an earlier claim — that `M420 S1` was "the
+load-bearing line a stock Ender-3 profile will not have" — was an error, on the grounds
+that `G29` probes fresh every print and that is what the verified print did.
+
+**That correction was wrong, and `output/BNO_Case.gcode` proves it.** That file is the
+Cura 5.13.0 print of this very part, the one that came out clean, and it has been sitting
+in `output/` since 2026-08-11. Its start sequence is:
+
+    G28 ;Home
+    M420 S1; Use saved mesh leveling data      <- there is no G29 anywhere
+    G1 X-3 Y20 Z0.28 F5000.0
+    M190 S60
+    M109 S200
+    G1 X-3 Y100.0 Z0.28 F1500.0 E15 ;Draw the first line
+
+Cura homes cold, loads a **stored mesh** (instant), heats, and primes immediately — hot
+for about thirty seconds. Probing fresh every print is what this profile does and Cura
+does not, and that difference is worth ~187 seconds of a warm, weeping nozzle. `M420 S1`
+was load-bearing all along.
+
+So: **use the stored mesh.** `calibrate_bed` probes once and saves it with `M500`;
+`slicer._apply_stored_mesh` then rewrites the `G29` line to `M420 S1` on every slice, but
+only once a mesh has demonstrably been stored. That machinery was built 2026-08-13 and sat
+switched off — the fix for three failed prints was a feature that already existed.
 
 **Stored meshes — added 2026-08-12, reversing the paragraph above in part.** The owner
 asked for the per-print probe to be optional. `M420 S1` is now used, but **still not in
@@ -521,6 +539,37 @@ mid-print reading — wait for `print_time_seconds` on a completed job.
 - `Speaker(voice_path=None)` means *this speaker has no voice*; discovery is a separate
   `DISCOVER` sentinel and happens lazily, not in the constructor — a constructor that
   touches the filesystem behaves differently on someone else's machine.
+
+### How the ooze bug was got wrong twice
+
+Worth keeping, because the failure was in method rather than in any one change.
+
+The symptom: drool sticking to the nozzle and being dragged into the first layer. Three
+prints were cancelled over it. Two fixes were designed and shipped before the cause was
+found, and **both were reasoned from the geometry of the start sequence**:
+
+1. Move the heat-up wait from `Z50` to `Z2.0`, so ooze smears instead of falling. It
+   stopped falling strings and started welding a blob to the nozzle.
+2. Park at the far end of the lane, purge deliberately, draw both prime lines away and
+   never return to the blob. Correct, and kept — but the drool still stuck.
+
+**The measurement that identified the real cause existed before either attempt.** The
+plate print ran 3416s against a 3229s estimate, and PrusaSlicer never counts
+`start_gcode`; that 187-second gap is the probe, and it was written into this file on
+2026-08-12. It was quoted while designing both fixes and treated as background rather than
+as the finding.
+
+**And the artefact that settled it was already on disk.** `output/BNO_Case.gcode` — the
+Cura print of this exact part that came out clean — was written 2026-08-11 and never read
+until the owner said "even with probing I didn't have this issue with Cura". It answers
+the question in six lines: Cura does not probe.
+
+Two habits worth taking from it:
+
+- When something works elsewhere and not here, **read the working artefact first**. It is
+  cheaper than any amount of reasoning and it cannot be argued with.
+- A number that explains a discrepancy is a finding, not a footnote. "187 seconds" was
+  sitting in the docs being ignored.
 
 ### The architecture change (supersedes BUILD_PLAN Phase 4)
 

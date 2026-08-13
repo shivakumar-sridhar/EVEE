@@ -54,6 +54,7 @@ from vtp.config import (
     park_settings,
     printer_timeout,
     printer_upload_timeout,
+    slicer_profile,
 )
 
 __all__ = [
@@ -66,6 +67,7 @@ __all__ = [
     "PrinterUnreachable",
     "PrintRefused",
     "UploadResult",
+    "stale_reason",
 ]
 
 #: G-code suffixes OctoPrint will accept for a print job.
@@ -80,6 +82,53 @@ AUDIT_LOG = OUTPUT_DIR / "print_log.jsonl"
 #: Home, probe the whole bed, save the mesh to EEPROM. A constant for the same reason
 #: :func:`_park_commands` is one — see its docstring.
 _MESH_COMMANDS = ("G28", "G29", "M500")
+
+
+def stale_reason(gcode_path: Path | str) -> str | None:
+    """Why this G-code should not be sent, or None if it is current.
+
+    G-code is a *snapshot*. It is compiled from an STL and a slicer profile, and neither
+    input leaves any trace in the file — so a G-code that was correct an hour ago can
+    describe a shape that has changed or a start sequence that has been rewritten, and
+    look identical from the outside.
+
+    This is not hypothetical. On 2026-08-13 a start-sequence fix was verified by slicing
+    to a scratch file, and the *stale* copy in ``output/`` was uploaded and started. The
+    printer ran the sequence the fix had just replaced, and it was caught only by reading
+    the file after the print was already going.
+
+    **The check lives here, not in the MCP tool, deliberately.** That mistake was made by
+    calling this client directly and bypassing the tool. A guard the caller can step
+    around is a guard for the callers who did not need it.
+
+    Two inputs are compared, both by modification time:
+
+    - **the slicer profile**, since editing ``start_gcode`` invalidates every G-code ever
+      sliced, silently and all at once
+    - **the sibling STL**, found by the naming convention :func:`vtp.slicer.slice_stl`
+      writes with (same stem, ``.stl``), for the case where the geometry moved on
+    """
+    path = Path(gcode_path)
+    try:
+        cut_at = path.stat().st_mtime
+    except OSError:
+        return None  # a missing file is upload_gcode's error to report, with its wording
+
+    for label, source in (
+        ("the slicer profile", slicer_profile()),
+        ("its STL", path.with_suffix(".stl")),
+    ):
+        try:
+            changed_at = source.stat().st_mtime
+        except OSError:
+            continue  # nothing to compare against is not evidence of staleness
+        if changed_at > cut_at:
+            return (
+                f"it was sliced before {label} last changed ({source.name}), so it is "
+                f"stale — it does not contain the current settings or shape. Re-slice "
+                f"it and print the new file. Nothing was uploaded."
+            )
+    return None
 
 
 def _park_commands() -> tuple[str, ...]:
@@ -650,6 +699,10 @@ class OctoPrintClient:
                 "uploaded. Ask the person, wait for their answer, and do not call "
                 "this again until you have one."
             )
+
+        stale = stale_reason(path)
+        if stale:
+            raise PrintRefused(f"refusing to print {Path(path).name}: {stale}")
 
         status = self.get_status()
         blocked = status.blocked_reason()

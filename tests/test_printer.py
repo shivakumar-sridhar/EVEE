@@ -919,3 +919,90 @@ def test_the_nozzle_is_cooled_whether_or_not_the_probe_confirmed():
             if (method, path) == ("POST", "/api/printer/command")
         ]
         assert sent[-1] == ["M104 S0"]
+
+
+# --- staleness -------------------------------------------------------------
+#
+# G-code is a snapshot compiled from an STL and a profile, and neither input
+# leaves a trace in the file. On 2026-08-13 a start-sequence fix was verified by
+# slicing to a scratch file while the STALE copy in output/ was uploaded and
+# started — caught only by reading the file after the print was running.
+
+
+from vtp.printer import stale_reason
+
+
+def _aged(path, seconds):
+    """Backdate a file so mtime comparisons are deterministic."""
+    import os
+
+    stamp = os.path.getmtime(path) - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_a_gcode_older_than_the_profile_is_refused(tmp_path, monkeypatch):
+    """Editing start_gcode invalidates every G-code ever sliced, silently and at once."""
+    profile = tmp_path / "printer.ini"
+    profile.write_text("x", encoding="utf-8")
+    gcode = tmp_path / "part.gcode"
+    gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
+    _aged(gcode, 60)
+
+    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: profile)
+    reason = stale_reason(gcode)
+
+    assert reason is not None
+    assert "the slicer profile" in reason
+    assert profile.name in reason          # name what changed, or it cannot be acted on
+    assert "Re-slice" in reason
+    assert "Nothing was uploaded" in reason
+
+
+def test_a_gcode_older_than_its_stl_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: tmp_path / "absent.ini")
+    (tmp_path / "part.stl").write_text("solid x", encoding="utf-8")
+    gcode = tmp_path / "part.gcode"
+    gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
+    _aged(gcode, 60)
+
+    assert "its STL" in stale_reason(gcode)
+
+
+def test_a_current_gcode_passes(tmp_path, monkeypatch):
+    profile = tmp_path / "printer.ini"
+    profile.write_text("x", encoding="utf-8")
+    _aged(profile, 60)
+    (tmp_path / "part.stl").write_text("solid x", encoding="utf-8")
+    _aged(tmp_path / "part.stl", 60)
+    gcode = tmp_path / "part.gcode"
+    gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
+
+    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: profile)
+    assert stale_reason(gcode) is None
+
+
+def test_nothing_to_compare_against_is_not_staleness(tmp_path, monkeypatch):
+    """A missing profile or a G-code with no sibling STL is not evidence of anything."""
+    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: tmp_path / "absent.ini")
+    gcode = tmp_path / "part.gcode"
+    gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
+
+    assert stale_reason(gcode) is None
+
+
+def test_the_upload_refuses_a_stale_file_before_touching_the_network(tmp_path, monkeypatch):
+    """The whole point: refused locally, so nothing reaches the printer. The guard sits
+    in the client rather than the MCP tool because the mistake was made by calling the
+    client directly."""
+    profile = tmp_path / "printer.ini"
+    profile.write_text("x", encoding="utf-8")
+    gcode = tmp_path / "part.gcode"
+    gcode.write_text(";LAYER_CHANGE\n", encoding="utf-8")
+    _aged(gcode, 60)
+    monkeypatch.setattr("vtp.printer.slicer_profile", lambda: profile)
+
+    printer, recorder = client({})
+    with pytest.raises(PrintRefused, match="stale"):
+        printer.upload_and_print(gcode, bed_confirmed_clear=True)
+
+    assert recorder.calls == [], "a stale file must not cost a status check or a transfer"
