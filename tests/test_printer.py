@@ -413,7 +413,7 @@ def test_confirmation_is_keyword_only():
 
 
 @pytest.mark.parametrize(
-    "bad", ["/home/shiv/EVEE/output/part.gcode", "sub/part.gcode", "..\\part.gcode", ""]
+    "bad", ["/var/spool/output/part.gcode", "sub/part.gcode", "..\\part.gcode", ""]
 )
 def test_a_path_is_not_a_filename(bad):
     printer, recorder = client({})

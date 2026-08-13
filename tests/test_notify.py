@@ -359,7 +359,7 @@ ENV_SAMPLE = """\
 # Copy to .env and fill in. .env is gitignored — never commit the real key.
 
 # OctoPrint. Settings -> Application Keys on the Pi.
-OCTOPRINT_URL=http://192.168.0.113
+OCTOPRINT_URL=http://octopi.local
 OCTOPRINT_API_KEY=SECRETKEYVALUE
 
 LLM_BACKEND=ollama
