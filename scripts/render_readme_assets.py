@@ -67,12 +67,23 @@ PARAMS = {
 # walls hide two of the four standoffs and the part reads as an empty tray.
 CAMERA_DIRECTION = "-0.6,-0.55,-1.2"
 
+# Spider-Man's suit, because of where the idea came from — see "Why this exists".
+#
+# These are input values, and the render comes out deeper than they look: filmic tone
+# mapping compresses the top end, so red has to be asked for at full saturation to
+# arrive as red rather than maroon. Turning tone mapping off does not help — it flattens
+# the shading into dusty pastel and costs the form definition that makes the ports and
+# the lip readable. Same for dropping --hdri-ambient.
+PART_COLORS = {
+    "body": "1.0,0.15,0.17",  # suit red
+    "lid": "0.10,0.26,0.80",  # suit blue
+}
+
 RENDER_ARGS = [
     "--up=+Z",
     f"--camera-direction={CAMERA_DIRECTION}",
     "--camera-zoom-factor=0.9",
     "--resolution=1600,1200",
-    "--color=0.34,0.54,0.74",
     "--roughness=0.4",
     "--metallic=0.0",
     "--ambient-occlusion",  # reads the depth of ports, holes and the lip
@@ -90,9 +101,9 @@ RENDER_ARGS = [
 TARGET_WIDTH = 800
 
 
-def render(stl: Path, out: Path) -> None:
+def render(stl: Path, out: Path, color: str) -> None:
     result = subprocess.run(
-        ["f3d", str(stl), f"--output={out}", *RENDER_ARGS],
+        ["f3d", str(stl), f"--output={out}", f"--color={color}", *RENDER_ARGS],
         capture_output=True,
         text=True,
     )
@@ -142,7 +153,7 @@ def main() -> None:
 
         for part, stl in result.stl_paths.items():
             dest = DOCS / f"case_{part}.png"
-            render(stl, dest)
+            render(stl, dest, PART_COLORS[part])
             trim_and_scale(dest)
             print(f"  {dest.relative_to(REPO_ROOT)}  ({dest.stat().st_size:,} B)")
 
