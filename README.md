@@ -69,8 +69,31 @@ geometry — only numbers, into a shape that was vetted in advance.
 
 **3. The server builds it and shows you.** Two solids, exported as STLs, plus a 3D window
 of the parts arranged on a virtual build plate exactly as they will print. You also get a
-sentence stating what was actually built: *"Outer 50×40×20mm, 2mm walls, press-fit lid at
-0.25mm clearance… usable interior 46×36×18mm."*
+sentence stating what was actually built: *"Outer 33×26×14mm, 2mm walls, press-fit lid at
+0.25mm clearance… usable interior 29×22×12mm."*
+
+<div align="center">
+<table>
+<tr>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/case_body_dark.png">
+  <img src="docs/case_body.png" alt="Isometric preview of the case body: a walled box with a rectangular port cut through each end and four screw standoffs on the cavity floor." width="100%">
+</picture>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/case_lid_dark.png">
+  <img src="docs/case_lid.png" alt="Isometric preview of the lid: a plate with a lip around its underside and four posts, each bored with a clearance hole, standing where the body's standoffs are." width="100%">
+</picture>
+</td>
+</tr>
+</table>
+</div>
+
+*The two solids from that request — ports through both ends, posts in the lid to screw
+down through. These are `render_preview` output, the same images `design_part` returns;
+regenerate them with `uv run python scripts/render_readme_assets.py`.*
 
 > **Gate 1 — is the shape right?** You are looking at the real mesh, not a render of what
 > the model intended. Wrong cutout position, lid too shallow, posts in the way: say so,
