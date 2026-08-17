@@ -1,0 +1,56 @@
+name: Bug report
+description: Something behaved differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before anything else: **if this is about a print that went wrong on the
+        machine, do not include it as a safety report here.** Open it as a normal
+        bug and say plainly what the printer did.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you asked for, what you got, and what you expected instead.
+    validations:
+      required: true
+
+  - type: input
+    id: printer
+    attributes:
+      label: Printer
+      description: >
+        This repo is tuned for one machine. A different printer changes almost
+        every answer, so name yours even if it seems irrelevant.
+      placeholder: Creality Ender-3 V3 SE, stock firmware
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      description: >
+        Only Claude Code reads CLAUDE.md; every other client sees just the tool
+        descriptions. Which one you used changes what the model was told.
+      placeholder: Claude Code / OpenCode / Cline / Zed
+    validations:
+      required: true
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `uv run python -VV` and `prusa-slicer --version`.
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >
+        Tool output or the server's stderr. **Check it for your OctoPrint API key
+        and your network before pasting.**
+      render: text

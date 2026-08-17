@@ -1,0 +1,44 @@
+name: Feature request
+description: A template, a parameter, or a change to the pipeline
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Worth knowing before you write: **there is no freeform geometry path, on
+        purpose.** The server fills vetted templates and refuses anything else, and
+        that is what makes it safe to point at a hot machine. "Let it design
+        arbitrary shapes" is a non-goal, not an oversight.
+
+        Adding a *template* is the intended way to widen what it can build.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of change
+      options:
+        - A new template (a shape that does not exist yet)
+        - A new parameter on an existing template
+        - A new feature on an existing template (geometry, not just a dimension)
+        - Something in the slicing / printing / notification path
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What should it do
+      description: >
+        Describe the part or behaviour. If it is geometry, the numbers that define
+        it are more useful than a picture.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What you are trying to build
+      description: >
+        The thing you actually need this for. It usually suggests a better shape
+        for the parameter than the one first asked for.
