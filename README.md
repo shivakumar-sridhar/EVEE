@@ -75,11 +75,11 @@ sentence stating what was actually built: *"Outer 33×26×14mm, 2mm walls, press
 <div align="center">
 <table>
 <tr>
-<td width="50%">
-<img src="docs/case_body.png" width="100%" alt="Render of the case body: a walled box with a rectangular port cut through each end and four screw standoffs on the cavity floor.">
+<td>
+<img src="docs/case_body.png" width="300" alt="Render of the case body: a walled box with a rectangular port cut through each end and four screw standoffs on the cavity floor.">
 </td>
-<td width="50%">
-<img src="docs/case_lid.png" width="100%" alt="Render of the lid: a plate with a lip around its underside and four posts, each bored with a clearance hole, standing where the body's standoffs are.">
+<td>
+<img src="docs/case_lid.png" width="300" alt="Render of the lid: a plate with a lip around its underside and four posts, each bored with a clearance hole, standing where the body's standoffs are.">
 </td>
 </tr>
 </table>
