@@ -1,14 +1,21 @@
 <div align="center">
 
-# EVEE
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/spider-white.png">
+    <img src="logo/spider.png" alt="" height="23">
+  </picture>
+  EVEE
+</h1>
 
 ### Everyday Virtual Engineering Engine
 
-#### *Describe a part. Look at it. Print it.*
+#### *An AI assistant for hardware prototyping*
 
-> Natural language to a printed object, without opening CAD. Describe an enclosure in a
-> sentence, review the geometry on screen, approve the cost, and let it print — with a
-> human decision at every step that moves the machine.
+> Natural language to a printed object, without opening CAD. Describe the part in a
+> sentence, review the real geometry on screen, revise it in another sentence, approve the
+> cost, and let it print — with a human decision at every step that moves the machine.
+> Built to make hardware iterations faster.
 
 **Parametric CAD · Verified Slicing · Printer Control · Human Approval Gates**
 
@@ -24,24 +31,26 @@ git clone git@github.com:shivakumar-sridhar/EVEE.git && cd EVEE && uv sync
 
 ## Why this exists
 
-I am a solo founder building hardware. The electronics were never what slowed me down —
-the enclosure was. Every sensor stack needs a case, and a case means opening CAD,
-sketching it, exporting it, slicing it, printing it, discovering the connector cutout is
-two millimetres off, changing one number, and doing the whole thing again.
+I am a solo founder building hardware, and iterative prototyping is slow.
+Every sensor I work with needs something printed around it, and
+each revision means opening CAD, sketching it, exporting it, slicing it, printing it,
+discovering the connector cutout is two millimetres off, changing one number, and doing
+the whole thing again.
 
-That is an afternoon of work for a part whose entire specification fits in one sentence:
-*a case for my BNO085, ports on both ends, screw posts in the lid.* The design is not
-hard. The friction is everything around it.
+A large part of my week goes into designing and printing parts for sensor stacks. The
+geometry is rarely hard; the specification usually fits in one sentence — *a case for my
+BNO085, ports on both ends, screw posts in the lid.* The friction is everything around
+that sentence, and it is paid again on every iteration.
 
-So I made the loop a conversation. I talk to Claude, it designs the part, I look at the
-real geometry on screen and say what is wrong, it changes the number, and when I am happy
-it slices it and prints it. Iterating on a dimension costs me a sentence instead of an
-afternoon, which means I iterate instead of settling for the first thing that fit.
+So I built an agent for the loop: design, review, revise, print. I say what I want, it
+designs the part, I look at the real geometry on screen and say what is wrong, it changes
+the number, and when I am happy it slices it and prints it. A revision costs me a
+sentence instead of an afternoon — which means I iterate to the part I actually wanted
+instead of settling for the first one that fit.
 
 The spark was *Spider-Man: Brand New Day* — Peter talking to an assistant that just
 fabricates his sensors and his suit while he keeps thinking about the problem. That is
-the right shape for prototyping. The machine should be waiting on your judgement, not on
-your mouse.
+the right shape for prototyping.
 
 What follows is the whole workflow and every tool it is built from.
 
@@ -60,8 +69,25 @@ geometry — only numbers, into a shape that was vetted in advance.
 
 **3. The server builds it and shows you.** Two solids, exported as STLs, plus a 3D window
 of the parts arranged on a virtual build plate exactly as they will print. You also get a
-sentence stating what was actually built: *"Outer 50×40×20mm, 2mm walls, press-fit lid at
-0.25mm clearance… usable interior 46×36×18mm."*
+sentence stating what was actually built: *"Outer 33×26×14mm, 2mm walls, press-fit lid at
+0.25mm clearance… usable interior 29×22×12mm."*
+
+<div align="center">
+<table>
+<tr>
+<td>
+<img src="docs/case_body.png" width="300" alt="Render of the case body: a walled box with a rectangular port cut through each end and four screw standoffs on the cavity floor.">
+</td>
+<td>
+<img src="docs/case_lid.png" width="300" alt="Render of the lid: a plate with a lip around its underside and four posts, each bored with a clearance hole, standing where the body's standoffs are.">
+</td>
+</tr>
+</table>
+</div>
+
+*The two solids from that request — ports through both ends, posts in the lid to screw
+down through. These are the exported STLs themselves, rendered with f3d; regenerate them
+with `uv run python scripts/render_readme_assets.py`.*
 
 > **Gate 1 — is the shape right?** You are looking at the real mesh, not a render of what
 > the model intended. Wrong cutout position, lid too shallow, posts in the way: say so,
@@ -117,10 +143,31 @@ every client equally.
 | `cancel_print(confirmed)` | Stops the job and parks the head so the plate can be cleaned |
 | `calibrate_bed(bed_confirmed_clear)` | Probes the bed once and stores the mesh, so later prints skip it |
 
-### What the box template can express
+### What it can design today: one template, and it is an enclosure
 
-Outer length, width and height · wall thickness · press-fit clearance · edge fillet · lid
-lip engagement depth, plus three features:
+Be clear about the scope. `box_with_lid` is the **only** template in the registry, so the
+CAD half of this pipeline currently designs boxes — cases for sensor stacks, which is what
+I kept needing. Ask it for a servo bracket, an SO-101 arm link or a gripper jaw and it
+will tell you no template fits and stop, rather than stretching a box into a shape it was
+never verified as.
+
+That is a library gap, not a ceiling. The scope is set by which templates exist:
+
+- **Everything below CAD is geometry-agnostic.** Slicing, the bed-size check, the three
+  gates, printer control and notification take an STL and do not care what it is of. A
+  gripper would go through the same pipeline, unchanged.
+- **The constraint is deliberate.** There is no freeform geometry path — no tool takes a
+  free-text description and improvises a solid. A template is a shape somebody vetted and
+  printed; the model only supplies numbers into it. That is what makes the output
+  predictable enough to send to a hot machine unattended.
+- **So adding a template is the way to widen it,** and the shape of that change is fixed
+  and small — see [Make it your own](#make-it-your-own). A `servo_bracket` with a mount
+  pattern and a horn clearance, or a parametric jaw, is a Pydantic model, a build
+  function and a test. Mechanisms with moving fits will need real print verification, the
+  same way the box's press-fit clearance did.
+
+Within the box template: outer length, width and height · wall thickness · press-fit
+clearance · edge fillet · lid lip engagement depth, plus three features:
 
 - **`ports`** — rectangular openings in any wall, for cables and connectors
 - **`standoffs`** — posts on the cavity floor to mount a PCB, with optional pilot holes
@@ -143,9 +190,7 @@ Outer 50x40x20mm, 2mm walls, press-fit lid at 0.25mm clearance with a 3mm lip, 1
 
 Both parts come out in print orientation, sitting on Z=0, needing no supports. The plate
 is the two of them side by side, and it is what gets sliced — so the arrangement you
-reviewed is the arrangement that prints. If no
-template fits your part, the pipeline says so rather than improvising geometry —
-freeform CAD generation is a deliberate non-goal.
+reviewed is the arrangement that prints.
 
 ---
 
