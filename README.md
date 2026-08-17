@@ -1,6 +1,12 @@
 <div align="center">
 
-# EVEE
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/spider-white.png">
+    <img src="logo/spider.png" alt="" width="44">
+  </picture>
+  EVEE
+</h1>
 
 ### Everyday Virtual Engineering Engine
 
