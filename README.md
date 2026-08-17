@@ -3,7 +3,7 @@
 <h1>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="logo/spider-white.png">
-    <img src="logo/spider.png" alt="" width="44">
+    <img src="logo/spider.png" alt="" height="28">
   </picture>
   EVEE
 </h1>
