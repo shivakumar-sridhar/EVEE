@@ -76,24 +76,18 @@ sentence stating what was actually built: *"Outer 33×26×14mm, 2mm walls, press
 <table>
 <tr>
 <td width="50%">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/case_body_dark.png">
-  <img src="docs/case_body.png" alt="Isometric preview of the case body: a walled box with a rectangular port cut through each end and four screw standoffs on the cavity floor." width="100%">
-</picture>
+<img src="docs/case_body.png" width="100%" alt="Render of the case body: a walled box with a rectangular port cut through each end and four screw standoffs on the cavity floor.">
 </td>
 <td width="50%">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/case_lid_dark.png">
-  <img src="docs/case_lid.png" alt="Isometric preview of the lid: a plate with a lip around its underside and four posts, each bored with a clearance hole, standing where the body's standoffs are." width="100%">
-</picture>
+<img src="docs/case_lid.png" width="100%" alt="Render of the lid: a plate with a lip around its underside and four posts, each bored with a clearance hole, standing where the body's standoffs are.">
 </td>
 </tr>
 </table>
 </div>
 
 *The two solids from that request — ports through both ends, posts in the lid to screw
-down through. These are `render_preview` output, the same images `design_part` returns;
-regenerate them with `uv run python scripts/render_readme_assets.py`.*
+down through. These are the exported STLs themselves, rendered with f3d; regenerate them
+with `uv run python scripts/render_readme_assets.py`.*
 
 > **Gate 1 — is the shape right?** You are looking at the real mesh, not a render of what
 > the model intended. Wrong cutout position, lid too shallow, posts in the way: say so,
