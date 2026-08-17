@@ -4,7 +4,7 @@
 
 ### Everyday Virtual Engineering Engine
 
-#### *Describe a part. Look at it. Print it.*
+#### *AI for everyday engineering design assistance*
 
 > Natural language to a printed object, without opening CAD. Describe the part in a
 > sentence, review the real geometry on screen, revise it in another sentence, approve the
