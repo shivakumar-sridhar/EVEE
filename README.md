@@ -4,7 +4,7 @@
 
 ### Everyday Virtual Engineering Engine
 
-#### *AI design assistance for hardware prototyping*
+#### *An AI assistant for hardware prototyping*
 
 > Natural language to a printed object, without opening CAD. Describe the part in a
 > sentence, review the real geometry on screen, revise it in another sentence, approve the
