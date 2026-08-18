@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to the same branch supersedes the first; no point paying for both.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # build123d pulls OpenCascade in as prebuilt wheels (~400MB, no source
+      # build). cadquery-ocp-novtk publishes cp313 manylinux wheels, so this
+      # resolves rather than compiling.
+      - run: uv python install 3.13
+
+      # --frozen: install exactly what uv.lock pins. Without it a fresh resolve
+      # can drift to newer versions and CI stops testing what a clone gets.
+      - run: uv sync --frozen
+
+      # Nothing here can reach a printer: tests/conftest.py repoints credentials
+      # at printer.invalid suite-wide, and matplotlib is forced to Agg in cad.py.
+      - run: uv run --frozen pytest -q

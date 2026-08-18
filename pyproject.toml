@@ -6,6 +6,36 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.15"
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "cad",
+    "parametric-cad",
+    "text-to-cad",
+    "3d-printing",
+    "slicer",
+    "gcode",
+    "build123d",
+    "prusaslicer",
+    "octoprint",
+    "ender-3",
+    "llm-tools",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Manufacturing",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Topic :: System :: Hardware",
+]
+
 dependencies = [
     "build123d>=0.9",
     "trimesh>=4.0",
@@ -23,6 +53,13 @@ dependencies = [
 # that lived in src/evee/voice/. It worked, and it was removed: the MCP client already
 # has speech input, and reimplementing it here bought nothing the gates did not already
 # guarantee. Speak to your client; the server never learns how the words arrived.
+
+# Must stay below `dependencies`: a table header ends the top-level key block, so
+# anything declared after it belongs to that table, not to [project].
+[project.urls]
+Homepage = "https://github.com/shivakumar-sridhar/EVEE"
+Repository = "https://github.com/shivakumar-sridhar/EVEE"
+Issues = "https://github.com/shivakumar-sridhar/EVEE/issues"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

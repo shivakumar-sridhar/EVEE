@@ -12,6 +12,11 @@
 
 #### *An AI assistant for hardware prototyping*
 
+[![tests](https://github.com/shivakumar-sridhar/EVEE/actions/workflows/tests.yml/badge.svg)](https://github.com/shivakumar-sridhar/EVEE/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](pyproject.toml)
+[![MCP server](https://img.shields.io/badge/MCP-server-8A2BE2.svg)](https://modelcontextprotocol.io)
+
 > Natural language to a printed object, without opening CAD. Describe the part in a
 > sentence, review the real geometry on screen, revise it in another sentence, approve the
 > cost, and let it print — with a human decision at every step that moves the machine.
@@ -19,7 +24,7 @@
 
 **Parametric CAD · Verified Slicing · Printer Control · Human Approval Gates**
 
-**MCP Server · Bring Your Own Model · Self-Hosted · No Cloud, No Account**
+**Model Context Protocol (MCP) Server · Bring Your Own Model · Self-Hosted · No Cloud, No Account**
 
 ```bash
 git clone git@github.com:shivakumar-sridhar/EVEE.git && cd EVEE && uv sync
@@ -126,8 +131,8 @@ Every stage, and what it is built from.
 | **Development** | — | Python 3.13 · uv · pytest, 327 tests |
 
 **The MCP server is the product. The model is bring-your-own.** Nothing here is
-Claude-specific — `python -m evee.server` speaks MCP on its own, and OpenCode, Cline or
-Zed drive it identically. The model contributes judgement about numbers; every rule about
+Claude-specific — `python -m evee.server` speaks the Model Context Protocol on its own,
+and OpenCode, Cline or Zed drive it identically. The model contributes judgement about numbers; every rule about
 what can be built and what can be printed lives server-side in Python, where it applies to
 every client equally.
 
