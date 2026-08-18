@@ -275,20 +275,27 @@ def slice_stl(
             f"and physically verified; do not generate a replacement."
         )
 
-    if shutil.which(executable) is None:
-        raise SlicerError(
-            f"{executable!r} is not on PATH. Install PrusaSlicer, or pass the path "
-            f"to the binary."
-        )
-
     # PrusaSlicer rejects an oversized object too, but its message names neither the
     # axis nor the overshoot — and that message is a client model's only chance to
     # correct the parameters.
+    #
+    # Checked BEFORE the binary is looked for, and that order is deliberate: the
+    # bed limit is pure geometry, read from the profile and the mesh, so it holds
+    # whether or not a slicer is installed. With the checks the other way round, a
+    # 400mm part on a machine without PrusaSlicer answered "not on PATH" — a setup
+    # error for a part that was never going to fit. CI caught this, having no
+    # slicer installed.
     violations = _bed_violations_for(stl_path)
     if violations:
         raise SlicerError(
             f"{stl_path.name} does not fit the printer: {'; '.join(violations)}. "
             f"Reduce the offending dimension and design the part again."
+        )
+
+    if shutil.which(executable) is None:
+        raise SlicerError(
+            f"{executable!r} is not on PATH. Install PrusaSlicer, or pass the path "
+            f"to the binary."
         )
 
     gcode_path = (

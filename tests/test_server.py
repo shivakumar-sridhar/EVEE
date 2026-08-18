@@ -12,6 +12,7 @@ standing between an arbitrary model and the geometry kernel.
 from __future__ import annotations
 
 import json
+import shutil
 
 import anyio
 import pytest
@@ -21,6 +22,11 @@ from evee.config import OUTPUT_DIR
 from evee.server import build_server
 
 GOOD = {"outer_l": 40, "outer_w": 30, "outer_h": 15}
+
+#: Same guard test_slicer.py uses. A test that slices for real needs the binary,
+#: and CI does not have one — without this it fails there and passes here, which
+#: is the worst of both.
+REAL_SLICER = shutil.which("prusa-slicer") is not None
 
 
 @pytest.fixture(scope="module")
@@ -733,6 +739,7 @@ def test_start_print_description_no_longer_claims_there_is_no_cancel_tool(server
     assert "cancel_print" in text
 
 
+@pytest.mark.skipif(not REAL_SLICER, reason="prusa-slicer not installed")
 def test_slice_part_reports_which_levelling_the_gcode_will_use(server, tmp_path):
     """calibrate_bed's description promises this field exists. It has to."""
     from evee.cad import design
